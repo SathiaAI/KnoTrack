@@ -79,7 +79,9 @@ describe('kt_record_session_summary', () => {
     });
 
     expect(result.drift_flags_raised).toHaveLength(1);
-    expect(result.drift_flags_raised[0]).toMatchObject({ flag_type: 'OUT_OF_SEQUENCE' });
+    // adversarial-review P1: the public flag_type is TRD Appendix C's
+    // 'SEQUENCE_SKIP', not an uppercased DB kind ('OUT_OF_SEQUENCE').
+    expect(result.drift_flags_raised[0]).toMatchObject({ flag_type: 'SEQUENCE_SKIP' });
 
     // Calling it again must not re-raise a duplicate open flag for the
     // same item.
@@ -91,6 +93,97 @@ describe('kt_record_session_summary', () => {
       items_touched: [],
     });
     expect(second.drift_flags_raised).toHaveLength(0);
+  });
+
+  // adversarial-review P1: bringing the earlier item back into sequence
+  // used to leave the previously-raised flag open forever — nothing ever
+  // wrote resolved_at. The scoped re-check must resolve it once the
+  // condition it was raised for no longer holds.
+  it('positive: a previously-raised flag is resolved once the out-of-sequence condition clears', async () => {
+    const { projectId, trackId } = await makeProjectAndTrack();
+    const earlier = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'Add refresh endpoint',
+      sequence_position: 1,
+      depends_on: [],
+    });
+    const later = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'Add rotation tests',
+      sequence_position: 2,
+      depends_on: [],
+    });
+    await pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [later.item_id]);
+
+    const first = await recordSessionSummaryService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      summary_text: 'Finished rotation tests early.',
+      files_touched: [],
+      items_touched: [],
+    });
+    expect(first.drift_flags_raised).toHaveLength(1);
+    const flagId = first.drift_flags_raised[0]?.flag_id;
+
+    // Bring the earlier item into sequence too — the condition clears.
+    await pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [earlier.item_id]);
+
+    const second = await recordSessionSummaryService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      summary_text: 'Caught up the refresh endpoint too.',
+      files_touched: [],
+      items_touched: [],
+    });
+    expect(second.drift_flags_raised).toHaveLength(0);
+
+    const flagRow = await pool.query('SELECT resolved_at FROM drift_flags WHERE id = $1', [flagId]);
+    expect(flagRow.rows[0].resolved_at).not.toBeNull();
+  });
+
+  // adversarial-review P1: hasOpenFlagForItem + insertDriftFlag was a
+  // check-then-insert with no DB constraint behind it — two concurrent
+  // scans of the same out-of-sequence item could both observe "not open
+  // yet" and both insert. The fix backs it with a partial unique index
+  // (migrations/003) and an atomic ON CONFLICT DO NOTHING insert, so this
+  // holds deterministically regardless of timing, not just "usually".
+  it('negative: concurrent scans of the same out-of-sequence item never raise more than one open flag', async () => {
+    const { projectId, trackId } = await makeProjectAndTrack();
+    await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'Earlier, still pending',
+      sequence_position: 1,
+      depends_on: [],
+    });
+    const later = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'Later, finished early',
+      sequence_position: 2,
+      depends_on: [],
+    });
+    await pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [later.item_id]);
+
+    await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        recordSessionSummaryService(pool, config, {
+          project_id: projectId,
+          track_id: trackId,
+          summary_text: `Concurrent summary ${i}`,
+          files_touched: [],
+          items_touched: [],
+        }),
+      ),
+    );
+
+    const openFlags = await pool.query(
+      `SELECT id FROM drift_flags WHERE item_id = $1 AND kind = 'out_of_sequence' AND resolved_at IS NULL`,
+      [later.item_id],
+    );
+    expect(openFlags.rowCount).toBe(1);
   });
 
   it('negative: 404 when track does not exist in project', async () => {
@@ -106,12 +199,14 @@ describe('kt_record_session_summary', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  // adversarial-review reliability-4: findSequenceSkips is O(n^2) in the
-  // track's item count and KNOTRACK_DRIFT_SCAN_ITEM_CAP was declared but
-  // never enforced anywhere, so an oversized track could make this call
-  // scan unboundedly. Uses a tiny cap override rather than the real
+  // adversarial-review reliability-4 / P1: findSequenceSkips is O(n^2) in
+  // the track's item count and KNOTRACK_DRIFT_SCAN_ITEM_CAP bounds it, but
+  // is documented (TRD §6.3/§7) as a kt_check_drift-scan limit, not a
+  // reason to refuse an otherwise-valid kt_record_session_summary write.
+  // Past the cap, the event must still commit — only the scoped drift
+  // re-check is skipped. Uses a tiny cap override rather than the real
   // 5000-item default so the test stays fast.
-  it('negative: 422 when the track has more items than driftScanItemCap allows', async () => {
+  it('positive: the event still commits when the track has more items than driftScanItemCap allows, drift re-check skipped', async () => {
     const cappedConfig = { ...config, driftScanItemCap: 3 };
     const { projectId, trackId } = await makeProjectAndTrack();
     for (let i = 0; i < 4; i += 1) {
@@ -124,15 +219,18 @@ describe('kt_record_session_summary', () => {
       });
     }
 
-    await expect(
-      recordSessionSummaryService(pool, cappedConfig, {
-        project_id: projectId,
-        track_id: trackId,
-        summary_text: 'Too many items in this track.',
-        files_touched: [],
-        items_touched: [],
-      }),
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    const result = await recordSessionSummaryService(pool, cappedConfig, {
+      project_id: projectId,
+      track_id: trackId,
+      summary_text: 'Too many items in this track.',
+      files_touched: [],
+      items_touched: [],
+    });
+
+    expect(result.event_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(result.drift_flags_raised).toEqual([]);
+    const row = await pool.query('SELECT id FROM events WHERE id = $1', [result.event_id]);
+    expect(row.rowCount).toBe(1);
   });
 
   it('negative: 422 when an items_touched id belongs to a different track', async () => {

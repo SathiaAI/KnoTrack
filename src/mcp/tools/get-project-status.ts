@@ -7,6 +7,7 @@ import { findActiveProjectById } from '../../db/queries/projects.js';
 import { listTracksWithItemCounts } from '../../db/queries/tracks.js';
 import { listOpenDriftFlags } from '../../db/queries/drift-flags.js';
 import { getRecentTimeline } from '../../db/queries/events.js';
+import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
 import { runTool } from '../tool-helpers.js';
 
@@ -44,47 +45,52 @@ export async function getProjectStatusService(
   _config: Config,
   input: GetProjectStatusInput,
 ): Promise<GetProjectStatusOutput> {
-  const project = await findActiveProjectById(pool, input.project_id);
-  if (!project) {
-    throw notFound('project not found', { project_id: input.project_id });
-  }
+  return withReadSnapshot(pool, async (client) => {
+    const project = await findActiveProjectById(client, input.project_id);
+    if (!project) {
+      throw notFound('project not found', { project_id: input.project_id });
+    }
 
-  const [tracks, driftFlags, timeline] = await Promise.all([
-    listTracksWithItemCounts(pool, input.project_id),
-    listOpenDriftFlags(pool, input.project_id, DRIFT_FLAGS_CAP),
-    getRecentTimeline(pool, input.project_id, RECENT_EVENTS_CAP),
-  ]);
+    // Sequential, not Promise.all: these now share one PoolClient (a
+    // single physical connection) rather than three separate pool
+    // connections, and node-postgres's Client doesn't pipeline concurrent
+    // .query() calls — issuing them without awaiting in between is
+    // deprecated (removed in pg@9) even though it happens to still work.
+    const tracks = await listTracksWithItemCounts(client, input.project_id);
+    const driftFlags = await listOpenDriftFlags(client, input.project_id, DRIFT_FLAGS_CAP);
+    const timeline = await getRecentTimeline(client, input.project_id, RECENT_EVENTS_CAP);
 
-  return {
-    tracks: tracks.map((t) => ({
-      track_id: t.id,
-      title: t.title,
-      status: t.status,
-      item_counts: {
-        pending: t.pending,
-        in_progress: t.in_progress,
-        done: t.done,
-        blocked: t.blocked,
-      },
-    })),
-    drift_flags: driftFlags.map((f) => ({
-      flag_id: f.flag_id,
-      flag_type: f.flag_type,
-      severity: f.severity,
-      track_id: f.track_id,
-      item_id: f.item_id,
-      detail: f.detail,
-      status: f.status,
-      raised_at: f.raised_at.toISOString(),
-    })),
-    recent_events: timeline.map((e) => ({
-      event_id: e.event_id,
-      event_type: e.event_type,
-      track_id: e.track_id,
-      summary_text: e.summary_text,
-      created_at: e.created_at.toISOString(),
-    })),
-  };
+    return {
+      tracks: tracks.map((t) => ({
+        track_id: t.id,
+        title: t.title,
+        status: t.status,
+        item_counts: {
+          pending: t.pending,
+          in_progress: t.in_progress,
+          done: t.done,
+          blocked: t.blocked,
+        },
+      })),
+      drift_flags: driftFlags.map((f) => ({
+        flag_id: f.flag_id,
+        flag_type: f.flag_type,
+        severity: f.severity,
+        track_id: f.track_id,
+        item_id: f.item_id,
+        detail: f.detail,
+        status: f.status,
+        raised_at: f.raised_at.toISOString(),
+      })),
+      recent_events: timeline.map((e) => ({
+        event_id: e.event_id,
+        event_type: e.event_type,
+        track_id: e.track_id,
+        summary_text: e.summary_text,
+        created_at: e.created_at.toISOString(),
+      })),
+    };
+  });
 }
 
 export function registerGetProjectStatusTool(

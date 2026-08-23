@@ -27,6 +27,23 @@ const SEVERITY_BY_KIND: Record<DriftKind, 'info' | 'warning' | 'critical'> = {
   orphan_file_change: 'warning',
 };
 
+// adversarial-review P1: `row.kind.toUpperCase()` produced 'OUT_OF_SEQUENCE'
+// for the DB kind, but TRD Appendix C names this public flag_type
+// 'SEQUENCE_SKIP' (see this module's header comment) — a client switching
+// on flag_type by the documented name could never match it. An explicit
+// per-kind mapping (rather than a string transform) makes the public name
+// independent of the DB's internal spelling, and a missing case is a
+// compile error instead of a silently-wrong uppercase guess.
+const PUBLIC_FLAG_TYPE_BY_KIND: Record<DriftKind, string> = {
+  out_of_sequence: 'SEQUENCE_SKIP',
+  // No TRD Appendix C flag_type corresponds to this DB kind — it isn't
+  // raised anywhere in this build (reserved for kt_check_drift's future
+  // orphan-file-change rule, out of scope here). Kept as a distinct,
+  // clearly-DB-shaped name rather than silently aliased to one of the six
+  // real flag_types it doesn't actually mean.
+  orphan_file_change: 'ORPHAN_FILE_CHANGE',
+};
+
 export interface DriftFlagRow {
   id: string;
   project_id: string;
@@ -52,7 +69,7 @@ export interface DriftFlagView {
 function toView(row: DriftFlagRow): DriftFlagView {
   return {
     flag_id: row.id,
-    flag_type: row.kind.toUpperCase(),
+    flag_type: PUBLIC_FLAG_TYPE_BY_KIND[row.kind],
     severity: SEVERITY_BY_KIND[row.kind],
     track_id: row.track_id,
     item_id: row.item_id,
@@ -62,7 +79,21 @@ function toView(row: DriftFlagRow): DriftFlagView {
   };
 }
 
-export async function insertDriftFlag(
+/**
+ * Raises a new open flag for (item_id, kind) unless one is already open,
+ * atomically. Returns the inserted row, or `null` when an open flag for
+ * this (item_id, kind) already existed (nothing inserted).
+ *
+ * adversarial-review P1: this used to be a separate `hasOpenFlagForItem`
+ * check followed by a plain `INSERT` — two concurrent
+ * kt_record_session_summary calls scanning the same out-of-sequence item
+ * could both observe "not open yet" and both insert, producing duplicate
+ * open flags for the same item. `ON CONFLICT ... DO NOTHING` against the
+ * `uq_drift_flags_open_item_kind` partial unique index (migrations/003)
+ * makes this check-and-insert atomic at the database level: at most one of
+ * two concurrent callers ever gets a row back.
+ */
+export async function insertDriftFlagIfNotOpen(
   db: Queryable,
   input: {
     projectId: string;
@@ -71,16 +102,16 @@ export async function insertDriftFlag(
     kind: DriftKind;
     detail: Record<string, unknown>;
   },
-): Promise<DriftFlagRow> {
+): Promise<DriftFlagRow | null> {
   const result = await db.query<DriftFlagRow>(
     `INSERT INTO drift_flags (project_id, track_id, item_id, kind, detail)
      VALUES ($1, $2, $3, $4, $5::jsonb)
+     ON CONFLICT (item_id, kind) WHERE resolved_at IS NULL
+     DO NOTHING
      RETURNING *`,
     [input.projectId, input.trackId, input.itemId, input.kind, JSON.stringify(input.detail)],
   );
-  const row = result.rows[0];
-  if (!row) throw new Error('insertDriftFlag: INSERT ... RETURNING produced no row');
-  return row;
+  return result.rows[0] ?? null;
 }
 
 export async function listOpenDriftFlags(
@@ -98,16 +129,37 @@ export async function listOpenDriftFlags(
   return result.rows.map(toView);
 }
 
-export async function hasOpenFlagForItem(
+/** Open flags of one kind, scoped to a track — used by the scoped
+ * re-check to know which items currently have an open flag, both to skip
+ * re-raising for them and to resolve the ones whose condition cleared. */
+export async function listOpenFlagsForTrack(
   db: Queryable,
-  itemId: string,
+  trackId: string,
   kind: DriftKind,
-): Promise<boolean> {
-  const result = await db.query(
-    `SELECT 1 FROM drift_flags WHERE item_id = $1 AND kind = $2 AND resolved_at IS NULL LIMIT 1`,
-    [itemId, kind],
+): Promise<DriftFlagRow[]> {
+  const result = await db.query<DriftFlagRow>(
+    `SELECT * FROM drift_flags WHERE track_id = $1 AND kind = $2 AND resolved_at IS NULL`,
+    [trackId, kind],
   );
-  return (result.rowCount ?? 0) > 0;
+  return result.rows;
+}
+
+/**
+ * Marks the given flags resolved (sets resolved_at = now()). No-op for an
+ * empty list.
+ *
+ * adversarial-review P1: nothing anywhere ever wrote `resolved_at` — once
+ * an item's out-of-sequence condition cleared (the earlier item was also
+ * finished), its flag stayed open indefinitely and kt_get_project_status
+ * kept reporting it. Called by the scoped re-check with exactly the open
+ * flags whose item is no longer among the current findings.
+ */
+export async function resolveDriftFlags(db: Queryable, flagIds: string[]): Promise<void> {
+  if (flagIds.length === 0) return;
+  await db.query(
+    `UPDATE drift_flags SET resolved_at = now() WHERE id = ANY($1::uuid[]) AND resolved_at IS NULL`,
+    [flagIds],
+  );
 }
 
 export { toView as driftFlagToView };

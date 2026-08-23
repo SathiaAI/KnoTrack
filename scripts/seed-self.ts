@@ -17,6 +17,7 @@
 import { readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadDotEnvIfPresent } from '../src/config/load-dotenv.js';
 import { loadConfig } from '../src/config/env.js';
 import { createPool } from '../src/db/pool.js';
 import { registerProjectService } from '../src/mcp/tools/register-project.js';
@@ -78,6 +79,7 @@ const T1_ITEMS = [
 ];
 
 async function main(): Promise<void> {
+  loadDotEnvIfPresent();
   const config = loadConfig();
   const pool = createPool(config);
 

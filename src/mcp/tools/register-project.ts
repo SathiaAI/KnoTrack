@@ -24,6 +24,13 @@ export async function registerProjectService(
   pool: Pool,
   config: Config,
   input: RegisterProjectInput,
+  // adversarial-review P2: the catch blocks below used to put the raw
+  // driver-error message on `details.cause`, which runTool then serializes
+  // verbatim into the client-facing envelope — leaking DB/driver internals
+  // through what TRD §3.1 documents as a generic 500. Defaulting to
+  // `console` keeps every existing call site working unchanged while
+  // registerProjectTool passes the real request logger.
+  logger: { error: (obj: unknown, msg?: string) => void } = console,
 ): Promise<RegisterProjectOutput> {
   return withTransaction(pool, async (client) => {
     // Atomic upsert on (source_type, source_ref) — see
@@ -55,9 +62,8 @@ export async function registerProjectService(
           },
         });
       } catch (cause) {
-        throw internalError('failed to store github adapter credential', {
-          cause: cause instanceof Error ? cause.message : String(cause),
-        });
+        logger.error({ err: cause }, 'failed to store github adapter credential');
+        throw internalError('failed to store github adapter credential');
       }
     }
 
@@ -74,9 +80,8 @@ export async function registerProjectService(
           },
         });
       } catch (cause) {
-        throw internalError('failed to store linear adapter credential', {
-          cause: cause instanceof Error ? cause.message : String(cause),
-        });
+        logger.error({ err: cause }, 'failed to store linear adapter credential');
+        throw internalError('failed to store linear adapter credential');
       }
     }
 
@@ -101,7 +106,7 @@ export function registerProjectTool(
     async (rawArgs: unknown) => {
       const input = rawArgs as RegisterProjectInput;
       return runTool(logger, 'kt_register_project', () =>
-        registerProjectService(pool, config, input),
+        registerProjectService(pool, config, input, logger),
       );
     },
   );

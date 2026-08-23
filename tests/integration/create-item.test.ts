@@ -83,6 +83,47 @@ describe('kt_create_item', () => {
     expect(edge.rowCount).toBe(1);
   });
 
+  // adversarial-review P1: an explicit sequence_position already occupied
+  // by another item used to be inserted unchanged, producing a duplicate
+  // declared position instead of the documented application-owned
+  // ordering. The fix renumbers by shifting everything at or after the
+  // requested position one later, matching how inserting into the middle
+  // of an ordered list works.
+  it('positive: an occupied explicit sequence_position shifts subsequent items instead of colliding', async () => {
+    const { projectId, trackId } = await makeProjectAndTrack();
+    const a = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'A',
+      sequence_position: 1,
+      depends_on: [],
+    });
+    const b = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'B',
+      sequence_position: 2,
+      depends_on: [],
+    });
+    const c = await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'C (inserted at 1)',
+      sequence_position: 1,
+      depends_on: [],
+    });
+
+    const rows = await pool.query<{ id: string; sequence_position: number }>(
+      'SELECT id, sequence_position FROM items WHERE track_id = $1 ORDER BY sequence_position',
+      [trackId],
+    );
+    expect(rows.rows).toEqual([
+      { id: c.item_id, sequence_position: 1 },
+      { id: a.item_id, sequence_position: 2 },
+      { id: b.item_id, sequence_position: 3 },
+    ]);
+  });
+
   it('negative: 404 when track does not exist in project', async () => {
     const { projectId } = await makeProjectAndTrack();
     await expect(

@@ -83,4 +83,50 @@ describe('kt_register_project', () => {
     // Non-secret metadata defaults repo to source_ref for a github project.
     expect(adapterRow.rows[0].config).toMatchObject({ repo: 'acme/widgets', connected: true });
   });
+
+  // adversarial-review P2: an adapter-storage failure used to attach the
+  // raw driver/cipher error message to `details.cause`, which runTool
+  // serializes verbatim into the client-facing envelope — leaking internals
+  // through what TRD §3.1 documents as a generic 500. A too-short
+  // encryption key makes `encryptCredential` throw a real Node crypto error
+  // ("Invalid key length") without needing to fake a DB failure, exercising
+  // the same catch block.
+  it('negative: an adapter-storage failure logs the cause server-side but never returns it to the client', async () => {
+    const loggedErrors: unknown[] = [];
+    const spyLogger = { error: (obj: unknown) => loggedErrors.push(obj) };
+    const badConfig = { ...config, encryptionKey: Buffer.alloc(10) };
+
+    let thrown: unknown;
+    try {
+      await registerProjectService(
+        pool,
+        badConfig,
+        {
+          name: 'Bad key',
+          source_type: 'github',
+          source_ref: 'acme/broken-key',
+          adapters: {
+            github: { personal_access_token: 'ghp_whatever', repo: undefined },
+          },
+        },
+        spyLogger,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'INTERNAL_ERROR' });
+    const envelope = (
+      thrown as { toEnvelope: () => { error: Record<string, unknown> } }
+    ).toEnvelope().error;
+    // No `details` at all — in particular, no leaked `details.cause`
+    // carrying the raw "Invalid key length" crypto error text.
+    expect(envelope.details).toBeUndefined();
+    expect(JSON.stringify(envelope)).not.toMatch(/invalid key length/i);
+
+    // But the cause was not silently swallowed — it went to the server log.
+    expect(loggedErrors).toHaveLength(1);
+    const loggedError = (loggedErrors[0] as { err: Error }).err;
+    expect(loggedError.message).toMatch(/invalid key length/i);
+  });
 });

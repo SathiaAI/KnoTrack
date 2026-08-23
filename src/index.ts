@@ -1,10 +1,12 @@
 // Process entrypoint: load config, run pre-flight checks, start Fastify.
+import { loadDotEnvIfPresent } from './config/load-dotenv.js';
 import { loadConfig } from './config/env.js';
 import { initContext, getDb } from './mcp/context.js';
 import { buildFastify } from './server/fastify.js';
 import { closePool } from './db/pool.js';
 
 async function main(): Promise<void> {
+  loadDotEnvIfPresent();
   const config = loadConfig();
   initContext(config);
   const pool = getDb();

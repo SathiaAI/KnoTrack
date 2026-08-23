@@ -4,6 +4,7 @@ import { createItemService } from '../../src/mcp/tools/create-item.js';
 import { createTrackService } from '../../src/mcp/tools/create-track.js';
 import { registerProjectService } from '../../src/mcp/tools/register-project.js';
 import { recordSessionSummaryService } from '../../src/mcp/tools/record-session-summary.js';
+import { withReadSnapshot } from '../../src/db/tx.js';
 import { closeTestPool, getTestConfig, getTestPool, truncateAll, UNKNOWN_UUID } from './helpers.js';
 
 const pool = getTestPool();
@@ -76,5 +77,65 @@ describe('kt_get_project_status', () => {
     await expect(
       getProjectStatusService(pool, config, { project_id: UNKNOWN_UUID }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  // adversarial-review P2: the three roll-up queries used to run on
+  // separate pool connections/snapshots, so a concurrent commit landing
+  // mid-flight could mix pre- and post-commit state. The fix
+  // (withReadSnapshot: one client, one REPEATABLE READ transaction) is
+  // exercised directly here against a genuine concurrent commit, proving
+  // the actual mechanism kt_get_project_status now relies on — a
+  // timing-based test against the full service call couldn't force the
+  // interleaving deterministically.
+  it('positive: withReadSnapshot holds one consistent view across a concurrent commit mid-transaction', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'P',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    await createTrackService(pool, config, {
+      project_id,
+      title: 'Track A',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+
+    let countBeforeConcurrentCommit = -1;
+    let countAfterConcurrentCommit = -1;
+    await withReadSnapshot(pool, async (client) => {
+      const before = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM tracks WHERE project_id = $1',
+        [project_id],
+      );
+      countBeforeConcurrentCommit = before.rows[0]?.n ?? -1;
+
+      // A fully separate connection commits a second track after this
+      // snapshot was already established.
+      await createTrackService(pool, config, {
+        project_id,
+        title: 'Track B (concurrent)',
+        depends_on: [],
+        source_doc_ref: undefined,
+      });
+
+      const after = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM tracks WHERE project_id = $1',
+        [project_id],
+      );
+      countAfterConcurrentCommit = after.rows[0]?.n ?? -1;
+    });
+
+    expect(countBeforeConcurrentCommit).toBe(1);
+    // Without REPEATABLE READ, this second read on the same transaction
+    // would already see the concurrently committed second track — exactly
+    // the torn-snapshot behavior the fix prevents.
+    expect(countAfterConcurrentCommit).toBe(1);
+
+    const finalCount = await pool.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM tracks WHERE project_id = $1',
+      [project_id],
+    );
+    expect(finalCount.rows[0]?.n).toBe(2);
   });
 });

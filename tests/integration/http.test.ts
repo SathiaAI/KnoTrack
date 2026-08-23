@@ -75,7 +75,6 @@ describe('POST /mcp auth (TRD §4)', () => {
     });
   });
 
-
   it('negative: rejects a request with no Authorization header — 401 UNAUTHORIZED', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -144,6 +143,15 @@ describe('POST /mcp auth (TRD §4)', () => {
 });
 
 describe('POST /mcp closed input schemas (TRD §3.0)', () => {
+  // adversarial-review P1 (documented, not fixed — see
+  // src/mcp/tool-helpers.ts's header comment and TRD §3.1's "known gap"
+  // bullet): the SDK rejects this before KnoTrack's own tool handler /
+  // runTool ever runs, so the response is *not* JSON.stringify of the
+  // documented VALIDATION_ERROR envelope — it's the SDK's own plain-text
+  // validation message. This assertion is intentionally loose (matches
+  // either the SDK's wording or the field name) rather than asserting the
+  // envelope shape, because the envelope shape is not what actually comes
+  // back on this path.
   it('negative: an unknown property in a tool call is rejected as a validation failure', async () => {
     const response = await app.inject({
       method: 'POST',

@@ -13,6 +13,7 @@ import {
   insertItemDependencies,
   listItemsByTrack,
   lockTrackForSequenceAssignment,
+  shiftSequencePositionsFrom,
 } from '../../db/queries/items.js';
 import { wouldCreateCycle } from '../../domain/dependency-graph.js';
 import { withTransaction } from '../../db/tx.js';
@@ -84,12 +85,24 @@ export async function createItemService(
 
     // adversarial-review correctness-1: lock the track row before reading
     // the current max so two concurrent auto-assigns on the same track
-    // serialize instead of both computing the same next position. Only
-    // needed on the auto-assign path — an explicit sequence_position is a
-    // plain write with no prior read to race.
+    // serialize instead of both computing the same next position.
     let sequencePosition: number;
     if (input.sequence_position !== undefined) {
+      // adversarial-review P1: an explicit sequence_position already used
+      // by another item in this track used to be inserted unchanged,
+      // producing two items that declare the same position — the schema
+      // has no uniqueness constraint on sequence_position to prevent it
+      // (by design, see items.ts), so nothing ever caught this. KnoTrack
+      // owns declared order as an application invariant instead: when the
+      // requested position is occupied, renumber by shifting every item
+      // at or after it one position later, the same way inserting into
+      // the middle of an ordered list works, so the new item lands
+      // exactly where asked without creating a duplicate. Locks the track
+      // first (like the auto-assign path) since choosing which rows to
+      // shift is also a read-then-write race between concurrent callers.
+      await lockTrackForSequenceAssignment(client, track.id);
       sequencePosition = input.sequence_position;
+      await shiftSequencePositionsFrom(client, track.id, sequencePosition);
     } else {
       await lockTrackForSequenceAssignment(client, track.id);
       sequencePosition = (await getMaxSequencePosition(client, track.id)) + 1;

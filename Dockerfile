@@ -17,7 +17,10 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
-COPY migrations ./migrations
+# scripts/migrate.ts resolves MIGRATIONS_DIR relative to its own compiled
+# location (dist/scripts/migrate.js -> dist/migrations), so the SQL files
+# must land there, not at /app/migrations.
+COPY migrations ./dist/migrations
 
 # Run as the non-root user node:20-slim already ships (uid 1000), not root.
 USER node

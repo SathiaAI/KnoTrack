@@ -63,6 +63,27 @@ export async function getItemDependencyEdgesForTrack(
   return result.rows.map((row) => ({ from: row.item_id, to: row.depends_on_item_id }));
 }
 
+/**
+ * Shifts every item at or after `fromPosition` one position later, making
+ * room to insert a new item at exactly `fromPosition`. Must be called
+ * inside the same transaction as the insert, after
+ * `lockTrackForSequenceAssignment` — same race this project already backs
+ * the auto-assign path with, since this is also a read-then-write
+ * (deciding which rows to shift) with no unique constraint on
+ * sequence_position to catch a concurrent collision otherwise.
+ */
+export async function shiftSequencePositionsFrom(
+  db: PoolClient,
+  trackId: string,
+  fromPosition: number,
+): Promise<void> {
+  await db.query(
+    `UPDATE items SET sequence_position = sequence_position + 1
+     WHERE track_id = $1 AND sequence_position >= $2`,
+    [trackId, fromPosition],
+  );
+}
+
 export async function insertItem(
   db: Queryable,
   input: { trackId: string; title: string; sequencePosition: number },
