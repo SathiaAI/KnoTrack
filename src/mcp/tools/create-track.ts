@@ -88,7 +88,7 @@ export function registerCreateTrackTool(
       inputSchema: createTrackInputSchema,
     },
     async (rawArgs: unknown) => {
-      const input = rawArgs as CreateTrackInput;
+      const input = createTrackInputSchema.parse(rawArgs);
       return runTool(logger, 'kt_create_track', () => createTrackService(pool, config, input));
     },
   );

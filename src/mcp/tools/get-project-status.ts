@@ -109,7 +109,7 @@ export function registerGetProjectStatusTool(
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (rawArgs: unknown) => {
-      const input = rawArgs as GetProjectStatusInput;
+      const input = getProjectStatusInputSchema.parse(rawArgs);
       return runTool(logger, 'kt_get_project_status', () =>
         getProjectStatusService(pool, config, input),
       );

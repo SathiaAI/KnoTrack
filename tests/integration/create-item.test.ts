@@ -233,6 +233,12 @@ describe('kt_create_item', () => {
     const { trackId } = await makeProjectAndTrack();
     const clientA = await pool.connect();
     const clientB = await pool.connect();
+    // Declared here (not inside the try block) so the finally block can
+    // always settle it, even when an assertion above throws before the
+    // normal `await bLock` is reached — leaving it unawaited would let a
+    // still-pending (or later-rejecting) lock acquisition on clientB
+    // become an unhandled rejection once the test has already moved on.
+    let bLock: Promise<void> | undefined;
     try {
       await clientA.query('BEGIN');
       await clientB.query('BEGIN');
@@ -240,7 +246,7 @@ describe('kt_create_item', () => {
       await lockTrackForSequenceAssignment(clientA, trackId);
 
       let bAcquired = false;
-      const bLock = lockTrackForSequenceAssignment(clientB, trackId).then(() => {
+      bLock = lockTrackForSequenceAssignment(clientB, trackId).then(() => {
         bAcquired = true;
       });
 
@@ -254,6 +260,19 @@ describe('kt_create_item', () => {
 
       await clientB.query('COMMIT');
     } finally {
+      // `pg` does not auto-rollback a transaction on release() — if an
+      // assertion above threw before the COMMITs, both clients would
+      // otherwise go back to the pool with an open transaction still on
+      // them, leaking into whichever test acquires that connection next.
+      // ROLLBACK outside a transaction (i.e. after a successful COMMIT
+      // already closed it) is a harmless Postgres no-op, safe either way.
+      await clientA.query('ROLLBACK').catch(() => undefined);
+      // Rolling back A first releases the row lock clientB's query may
+      // still be blocked on, so awaiting bLock here (rather than leaving
+      // it dangling) lets that pending acquisition settle — successfully
+      // or not — before clientB is released back to the pool.
+      if (bLock) await bLock.catch(() => undefined);
+      await clientB.query('ROLLBACK').catch(() => undefined);
       clientA.release();
       clientB.release();
     }

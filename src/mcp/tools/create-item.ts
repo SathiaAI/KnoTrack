@@ -135,7 +135,7 @@ export function registerCreateItemTool(
       inputSchema: createItemInputSchema,
     },
     async (rawArgs: unknown) => {
-      const input = rawArgs as CreateItemInput;
+      const input = createItemInputSchema.parse(rawArgs);
       return runTool(logger, 'kt_create_item', () => createItemService(pool, config, input));
     },
   );

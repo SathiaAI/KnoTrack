@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildFastify } from '../../src/server/fastify.js';
 import { registerProjectService } from '../../src/mcp/tools/register-project.js';
+import { createTrackService } from '../../src/mcp/tools/create-track.js';
 import { closeTestPool, getTestConfig, getTestPool, truncateAll } from './helpers.js';
 
 const pool = getTestPool();
@@ -222,5 +223,64 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
       error: { message: string };
     };
     expect(envelope.error.message).toMatch(/not yet implemented/i);
+  });
+
+  // CodeRabbit raised a Critical finding that every tool handler casting
+  // `rawArgs as SomeInputType` instead of calling `SomeInputSchema.parse`
+  // meant Zod's `.default([])` on `kt_record_session_summary`'s
+  // `files_touched`/`items_touched` would never actually run, so a call
+  // omitting them would reach `Array.from(new Set(input.items_touched))`
+  // with `undefined` and throw. Investigation (see src/mcp/tools/*.ts and
+  // this pinned SDK version's server/mcp.js) found the handler was never
+  // actually reachable with undefined fields in the first place: the SDK
+  // (`McpServer.setToolRequestHandlers`) already runs
+  // `this.validateToolInput(tool, request.params.arguments, ...)` — a real
+  // `safeParseAsync` against the exact same Zod schema, defaults included
+  // — and passes *that* parsed result into the handler, before the
+  // handler's own body (and thus its cast) ever runs; a request missing
+  // these fields never reaches `Array.from(new Set(undefined))` even
+  // pre-fix. This test proves that end to end over the real HTTP/JSON-RPC
+  // path. The `.parse()` calls this fix round added to every handler are
+  // still correct defensive practice (and are exercised implicitly by
+  // this same request), just not what was making this particular call
+  // succeed.
+  it('positive: kt_record_session_summary omitting files_touched/items_touched applies their [] defaults rather than throwing', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'Defaults test',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${config.apiTokens[0]}`,
+      },
+      payload: rpcCall('kt_record_session_summary', {
+        project_id,
+        track_id,
+        summary_text: 'Did the thing, no files/items listed.',
+        // files_touched and items_touched deliberately omitted.
+      }),
+    });
+    expect(response.statusCode).toBe(200);
+    const body = parseSseBody(response.body) as {
+      result: {
+        isError?: boolean;
+        structuredContent: { event_id: string; drift_flags_raised: unknown[] };
+      };
+    };
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.structuredContent.event_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(body.result.structuredContent.drift_flags_raised).toEqual([]);
   });
 });

@@ -20,11 +20,23 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.host });
 
+  // A second signal (or a signal arriving while the first is still
+  // closing) must not start a concurrent shutdown, and a rejection from
+  // either close call must not leave this an unhandled rejection with the
+  // process hanging until something sends SIGKILL.
+  let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     app.log.info({ signal }, 'shutting down');
-    await app.close();
-    await closePool();
-    process.exit(0);
+    try {
+      await app.close();
+      await closePool();
+      process.exit(0);
+    } catch (error) {
+      app.log.error({ err: error, signal }, 'error during shutdown');
+      process.exit(1);
+    }
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));

@@ -38,11 +38,32 @@ export function registerMcpRoute(app: FastifyInstance, pool: Pool, config: Confi
         server.close().catch(() => undefined);
       });
 
-      await server.connect(transport);
-      await transport.handleRequest(request.raw, reply.raw, request.body);
-      // transport.handleRequest writes directly to the raw response; tell
-      // Fastify not to also send a reply.
+      // transport.handleRequest writes directly to the raw response, so
+      // Fastify must be told to stop owning this reply *before* that call
+      // runs — per Fastify's documented hijack contract, calling hijack()
+      // only after an awaited handler settles is too late: a rejection
+      // from handleRequest (e.g. thrown before it writes anything) would
+      // otherwise leave Fastify still expecting to send its own response
+      // on a reply that may already have had raw bytes written to it.
       reply.hijack();
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(request.raw, reply.raw, request.body);
+      } catch (error) {
+        app.log.error({ err: error }, 'unhandled error in /mcp request handling');
+        if (!reply.raw.headersSent && !reply.raw.writableEnded) {
+          reply.raw.writeHead(500, { 'content-type': 'application/json' });
+          reply.raw.end(
+            JSON.stringify({
+              error: {
+                code: 'INTERNAL_ERROR',
+                http_status_equivalent: 500,
+                message: 'an unexpected error occurred',
+              },
+            }),
+          );
+        }
+      }
     },
   );
 }

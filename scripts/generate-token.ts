@@ -4,9 +4,10 @@
 import crypto from 'node:crypto';
 
 function generateToken(): string {
-  // 32 URL-safe base64 characters, prefixed "kt_" — convention only, not
-  // enforced by the auth check itself (TRD §4).
-  const raw = crypto.randomBytes(24).toString('base64url'); // 24 bytes -> 32 base64url chars
+  // 256 bits (32 bytes) of entropy per docs/PRD.md, encoded as 43 URL-safe
+  // base64 characters, prefixed "kt_" — convention only, not enforced by
+  // the auth check itself (TRD §4).
+  const raw = crypto.randomBytes(32).toString('base64url'); // 32 bytes -> 43 base64url chars
   return `kt_${raw}`;
 }
 

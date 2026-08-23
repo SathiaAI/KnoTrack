@@ -511,7 +511,7 @@ only one that represents "here is what I observe, ranked."
 
 ### Postgres unreachable
 
-- The `pg` pool's health check fails; Fastify's `/healthz` endpoint reports
+- The `pg` pool's health check fails; Fastify's `/health` endpoint reports
   unhealthy so platform-level restarts/alerts (Render/Railway/Fly health
   checks) can react.
 - Every tool that touches the DB — which is all 13 — returns a structured

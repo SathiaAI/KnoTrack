@@ -4,8 +4,8 @@
 
 FROM node:20-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
@@ -14,8 +14,8 @@ RUN npm run build
 FROM node:20-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 # scripts/migrate.ts resolves MIGRATIONS_DIR relative to its own compiled
 # location (dist/scripts/migrate.js -> dist/migrations), so the SQL files

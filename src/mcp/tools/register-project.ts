@@ -104,7 +104,7 @@ export function registerProjectTool(
       inputSchema: registerProjectInputSchema,
     },
     async (rawArgs: unknown) => {
-      const input = rawArgs as RegisterProjectInput;
+      const input = registerProjectInputSchema.parse(rawArgs);
       return runTool(logger, 'kt_register_project', () =>
         registerProjectService(pool, config, input, logger),
       );

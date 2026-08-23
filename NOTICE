@@ -11,7 +11,11 @@ of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 
 If you redistribute KnoTrack or a derivative work, in source or binary
-form, this NOTICE file must be included, unmodified, with your
-distribution, per §4(d) of the License. Retaining it is how downstream
-users find their way back to the original project and its license terms —
-please don't strip it, even in a fork.
+form, §4(d) of the License requires that the attribution notices below
+remain available to recipients — in a NOTICE file, in source-file headers,
+in accompanying documentation, or wherever a display of third-party
+notices would normally appear. You may add your own attribution notices
+alongside these; NOTICE-file content does not modify the License's terms.
+Retaining these notices (in whatever form) is how downstream users find
+their way back to the original project and its license terms — please
+don't strip them, even in a fork.

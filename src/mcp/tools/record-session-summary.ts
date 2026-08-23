@@ -174,7 +174,7 @@ export function registerRecordSessionSummaryTool(
       inputSchema: recordSessionSummaryInputSchema,
     },
     async (rawArgs: unknown) => {
-      const input = rawArgs as RecordSessionSummaryInput;
+      const input = recordSessionSummaryInputSchema.parse(rawArgs);
       return runTool(logger, 'kt_record_session_summary', () =>
         recordSessionSummaryService(pool, config, input, logger),
       );

@@ -127,9 +127,12 @@ infrastructure-specific dependencies beyond Postgres and a Node runtime).
 Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
 This is genuinely open source: you can fork it, modify it, and run it
-commercially. The one thing the license asks in return is that the
-`NOTICE` file travels with any redistribution, unmodified — that's what
-keeps credit attached to the project as it spreads. If you build something
-publicly on top of KnoTrack, a visible mention ("built on KnoTrack") is
-appreciated but not legally required beyond the NOTICE file itself; please
-don't strip attribution and present it as an unrelated original work.
+commercially. What the license asks in return (Apache-2.0 §4(d)) is that
+the attribution notices in `NOTICE` remain available to anyone you
+redistribute to — that's what keeps credit attached to the project as it
+spreads. You're free to extend `NOTICE` with your own notices; it doesn't
+have to stay byte-for-byte unmodified, and adding to it doesn't change the
+license terms. If you build something publicly on top of KnoTrack, a
+visible mention ("built on KnoTrack") is appreciated but not legally
+required beyond keeping those notices available; please don't strip
+attribution and present it as an unrelated original work.
