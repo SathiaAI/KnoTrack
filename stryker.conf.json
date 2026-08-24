@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.stryker.config.ts"
+  },
+  "mutate": [
+    "src/domain/dependency-graph.ts",
+    "src/domain/drift-detector.ts",
+    "src/crypto/credential-cipher.ts",
+    "src/server/auth.ts"
+  ],
+  "reporters": ["clear-text", "json"],
+  "jsonReporter": {
+    "fileName": "stryker-report.json"
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 60
+  },
+  "concurrency": 2
+}
