@@ -239,9 +239,9 @@ dedicated set distinct from the basic per-tool contract above.)
 | CITM-05 | kt_create_item | Negative | Track exists | `title=""` | 400 |
 | CITM-06 | kt_create_item | Negative | Track exists | `sequence_position=-1` | 400 |
 | CITM-07 | kt_create_item | Negative | Track exists | `sequence_position="two"` (wrong type) | 400 |
-| CITM-08 | kt_create_item | Negative | Track exists | `depends_on=["<nonexistent-item-id>"]` | 404/400 |
-| CITM-09 | kt_create_item | Negative | Track T1 has item X; track T2 exists in the same project | `track_id=T2`, `depends_on=[X]` (X belongs to T1) | Per implementation's documented policy on cross-track deps: either 200/201 if cross-track item dependencies within the same project are explicitly allowed, or 400/404 if they are not — this test exists to force that policy to be documented and enforced, not left ambiguous |
-| CITM-10 | kt_create_item | Negative | Project P1 has item X; project P2 exists | Token for P2, `depends_on=[X]` (X belongs to P1) | 404/400 — cross-project item dependency rejected |
+| CITM-08 | kt_create_item | Negative | Track exists | `depends_on=["<nonexistent-item-id>"]` | 404 NOT_FOUND — the id doesn't exist as an item at all |
+| CITM-09 | kt_create_item | Negative | Track T1 has item X; track T2 exists in the same project | `track_id=T2`, `depends_on=[X]` (X belongs to T1) | 400 VALIDATION — cross-track item dependencies are not allowed; `depends_on` must belong to the same track as the item being created (docs/PRD.md §4.7) |
+| CITM-10 | kt_create_item | Negative | Project P1 has item X; project P2 exists | Token for P2, `depends_on=[X]` (X belongs to P1) | 404 NOT_FOUND or 400 VALIDATION — X does not exist as an item in P2's track scope |
 | CITM-11 | kt_create_item | Negative | None | `project_id` omitted | 400 |
 | CITM-12 | kt_create_item | Negative | Project exists | `track_id` omitted | 400 |
 | CITM-13 | kt_create_item | Negative (auth) | Track exists | Missing token | 401 |

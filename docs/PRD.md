@@ -212,11 +212,11 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 **Business rules / edge cases:**
 - `track_id` must belong to `project_id`; if it belongs to a different project or doesn't exist, `NOT_FOUND`.
 - Any `depends_on` reference (track- or item-level) that points at an ID no longer resolvable is **not** a hard failure for the whole call — it is collected into `dangling_dependencies` (or the track-level equivalent) so the rest of the track's real data is still usable. *Rationale: since v1 has no delete tool for tracks/items, dangling references should be rare, but a typo'd ID at creation time (§4.6/§4.7) should degrade gracefully on read rather than making the whole track unreadable.*
-- `item_edges` in `dependency_graph` include cross-track item dependencies (an item may declare `depends_on` on an item that lives in a different track) — item-level dependencies are independent of track-level dependencies and are never required to mirror each other. *Rationale: forcing every cross-track item link to also be declared as a track-level dependency would make fine-grained sequencing (e.g., "this one item needs that one item, but the two tracks are otherwise independent") impossible to express without an unwanted broader constraint.*
+- `item_edges` in `dependency_graph` are always within this track: `kt_create_item` (§4.7) validates that every `depends_on` id belongs to the same track as the item being created, so an item can never declare a dependency on an item in a different track. Item-level dependencies are still independent of track-level dependencies within the track (an item's `depends_on` is not required to mirror the track's own `depends_on`).
 
 **Acceptance criteria:**
 - **Given** track T has 4 items in sequence positions 1, 2, 3, 4, **when** `kt_get_track` is called, **then** `items` is returned in that exact order.
-- **Given** item A (in track T) declares `depends_on: [B]` where B lives in a different track T2, **when** `kt_get_track` is called for T, **then** `dependency_graph.item_edges` includes `{ from: A, to: B }` even though T does not declare `depends_on: [T2]`.
+- **Given** item A (in track T) declares `depends_on: [B]` where B is a different item also in track T, **when** `kt_get_track` is called for T, **then** `dependency_graph.item_edges` includes `{ from: A, to: B }`.
 - **Given** an item's `depends_on` array contains an ID that does not exist in the database, **when** `kt_get_track` is called, **then** the call still succeeds, and `dangling_dependencies` contains that pair.
 - **Given** a `track_id` that exists but belongs to a different `project_id` than the one supplied, **when** `kt_get_track` is called, **then** the call fails with `NOT_FOUND`.
 
@@ -283,15 +283,15 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 
 **Description:** Create a new Item inside a Track.
 
-**Inputs:** `project_id`, `track_id` (required), `title` (required), `description` (optional), `sequence_position` (optional integer; auto-assigned as `max(existing positions in this track) + 1` if omitted), `depends_on` (optional array of `item_id`, may reference items in other tracks within the same project), `file_patterns` (optional array of glob strings), `initial_status` (optional enum, default `"not_started"`).
+**Inputs:** `project_id`, `track_id` (required), `title` (required), `description` (optional), `sequence_position` (optional integer; auto-assigned as `max(existing positions in this track) + 1` if omitted), `depends_on` (optional array of `item_id`, must reference other items already in this same track), `file_patterns` (optional array of glob strings), `initial_status` (optional enum, default `"not_started"`).
 
 **Output:** `{ item_id, track_id, title, sequence_position, depends_on, file_patterns, status, created_at }`
 
 **Business rules / edge cases:**
 - `sequence_position` is **not** required to be unique per track at the database level (see `docs/DATABASE_SCHEMA.md`'s `items` table). If the caller supplies a position already taken within that track, KnoTrack shifts every existing item at or after that position up by one (an atomic `UPDATE ... WHERE track_id = $1 AND sequence_position >= $2` inside the same transaction as the insert) so the new item lands at the requested position without ever producing a duplicate. *Rationale: rejecting the call would push the renumbering decision onto every caller; shifting keeps `sequence_position` values always contiguous and unique in practice without requiring a database-level uniqueness constraint that would make concurrent reordering race-prone.*
-- `depends_on` cycle detection runs over the **whole project's item-dependency graph** (not scoped to one track), since items can depend cross-track; on cycle, `CYCLE_DETECTED` with the cycle path.
+- `depends_on` cycle detection runs over **this track's item-dependency graph only** — items may only depend on other items in the same track, so cross-track cycles cannot occur; on cycle, `CYCLE_DETECTED` with the cycle path.
 - Each entry in `file_patterns` is validated as syntactically valid glob syntax; an invalid entry → `VALIDATION` naming which pattern failed.
-- `depends_on` referencing an item not in this project → `VALIDATION`.
+- `depends_on` referencing an item id that does not exist at all → `NOT_FOUND`. `depends_on` referencing an item id that exists but belongs to a different track → `VALIDATION`.
 
 **Acceptance criteria:**
 - **Given** track T has items at positions 1 and 2, **when** `kt_create_item` is called with no `sequence_position`, **then** the new item is assigned position 3.
@@ -490,7 +490,7 @@ Note: `client_id` is never a body parameter — it is resolved server-side from 
 - **Bearer tokens, one per client device**, held client-side only in that tool's own MCP config (e.g., an environment variable or config field the harness reads to set the `Authorization: Bearer <token>` header). Tokens are opaque random 256-bit values.
 - Token issuance is **not** an MCP tool — it is a server-side CLI/admin command run by the installer directly on the server (`knotrack create-token --project <id> --label <device-name>`), because a stateless MCP tool call would need a token to already exist in order to be authenticated in the first place. Issuance prints the raw token exactly once; it is stored server-side only as a salted hash (bcrypt or argon2id) and is never retrievable or re-displayed after creation. Revocation is `knotrack revoke-token <token-id>`, also a server-side CLI command.
 - Every one of the 14 MCP tool calls requires a valid, unrevoked bearer token. The token resolves to a `client_id` server-side; this resolved `client_id`, not any client-supplied field, is what gets stamped onto Events (§4.8), preventing a client from claiming to be a different device than the one it authenticated as.
-- Adapter credentials (`GITHUB_TOKEN`, `LINEAR_API_KEY`) are configured **only** via server-side environment variables or a server-side config file. They are never accepted as a parameter on any MCP tool, and never appear in any MCP tool's input or output schema — this guarantees they can never transit through a client-side MCP config file or end up inside an agent's context window.
+- Adapter credentials (a GitHub personal access token, a Linear API key) are supplied inline as **input** to `kt_register_project`'s `adapters` field (§4.1) — this is the only way to set or rotate them, since there is no separate "update credentials" tool. They are encrypted (AES-256-GCM) before being persisted to the `adapters` table and are **never** included in any MCP tool's output — `kt_register_project` and every other tool return only `project_id`/derived fields, never the credential itself, so a credential cannot be echoed back into an agent's context window once stored.
 - No cross-project data leakage: every scoped lookup (track/item/event/decision under a `project_id`) is validated as belonging to that project before being returned or mutated (§4.0), even though a single instance is single-tenant — this protects an installer who registers more than one unrelated project on the same instance.
 
 ### 5.4 MCP client compatibility (stated exactly, not oversold)
@@ -560,16 +560,16 @@ Because KnoTrack collects no central telemetry (§5.6), every metric below is so
 
 ## 9. Appendix: Data Model Reference
 
-For implementer convenience, the full field list per entity (Postgres-flavored types; `depends_on`-style arrays are stored as JSONB arrays of ID strings or a join table, implementer's choice, as long as the cycle-detection and cross-track behaviors in §4.6/§4.7 hold):
+For implementer convenience, the full field list per entity (Postgres-flavored types; `depends_on`-style arrays are stored as JSONB arrays of ID strings or a join table, implementer's choice, as long as the cycle-detection behaviors in §4.6/§4.7 hold — see `docs/DATABASE_SCHEMA.md` for the canonical, authoritative column definitions):
 
 **Project**
-`id (uuid pk)`, `name (text, unique citext)`, `root_path (text, nullable)`, `repo_url (text, nullable)`, `adapters_enabled (text[])`, `created_at (timestamptz)`, `updated_at (timestamptz)`
+`id (uuid pk)`, `name (text)`, `source_type (text — "github" | "linear" | "local")`, `source_ref (text, nullable)`, `created_at (timestamptz)`, `updated_at (timestamptz)`, `deleted_at (timestamptz, nullable — soft delete)`. Adapter credentials live in a separate `adapters` table (one row per project+type), never inline on `projects`.
 
 **Track**
 `id (uuid pk)`, `project_id (uuid fk)`, `title (text)`, `description (text, nullable)`, `status (enum: on_track|pivot_pending|blocked|done)`, `depends_on (uuid[] of track ids)`, `created_at`, `updated_at`
 
 **Item**
-`id (uuid pk)`, `track_id (uuid fk)`, `title (text)`, `description (text, nullable)`, `status (enum: not_started|in_progress|blocked|done)`, `sequence_position (integer, unique per track_id)`, `depends_on (uuid[] of item ids, cross-track allowed)`, `file_patterns (text[], nullable)`, `external_ref (text, nullable — "github:<url>" or "linear:<id>")`, `created_at`, `updated_at`
+`id (uuid pk)`, `track_id (uuid fk)`, `title (text)`, `description (text, nullable)`, `status (enum: not_started|in_progress|blocked|done)`, `sequence_position (integer, not unique per track_id — see §4.7's shift-on-insert behavior)`, `depends_on (uuid[] of item ids, must be in the same track)`, `file_patterns (text[], nullable)`, `external_ref (text, nullable — "github:<url>" or "linear:<id>")`, `created_at`, `updated_at`
 
 **Event** (append-only: no UPDATE/DELETE grants at the DB role level)
 `id (uuid pk)`, `project_id (uuid fk)`, `track_id (uuid fk, nullable)`, `item_ids (uuid[], nullable)`, `client_id (text, resolved from bearer token, not client-supplied)`, `files_touched (text[])`, `summary (text)`, `self_reported_drift (boolean, nullable)`, `self_reported_drift_note (text, nullable)`, `structural_drift_result (jsonb — the drift_result computed inline at write time)`, `created_at`
