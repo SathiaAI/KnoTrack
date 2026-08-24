@@ -112,40 +112,39 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 
 ### 4.0 Conventions used throughout this section
 
-- All 13 tools are exposed over MCP following the **2026-07-28 stateless MCP spec**: every call is self-contained and includes every ID it needs (`project_id`, and further-scoped IDs as applicable). No tool relies on "the last project you registered," "the current track," or any other server-side session memory — a stateless server has none to rely on, and KnoTrack's implementation must not simulate it via in-memory globals either, since MCP clients may (and do) round-robin calls across reconnecting transports.
-- IDs are UUIDv4 strings with a human-readable prefix: `proj_`, `trk_`, `itm_`, `evt_`, `dec_`. Prefixes are cosmetic; uniqueness is enforced on the full string.
+- All 14 tools are exposed over MCP following the **2026-07-28 stateless MCP spec**: every call is self-contained and includes every ID it needs (`project_id`, and further-scoped IDs as applicable). No tool relies on "the last project you registered," "the current track," or any other server-side session memory — a stateless server has none to rely on, and KnoTrack's implementation must not simulate it via in-memory globals either, since MCP clients may (and do) round-robin calls across reconnecting transports.
+- IDs are plain UUIDs (`gen_random_uuid()`, no prefix) — see `docs/DATABASE_SCHEMA.md` for the canonical column definitions.
 - All tool inputs are validated against a JSON Schema with `additionalProperties: false`. Unknown fields are rejected, not ignored — this catches client-side typos immediately instead of silently dropping data.
 - All tool outputs are returned as a single JSON object inside the MCP tool result's text content block.
-- Errors are structured: `{ "code": "<ERROR_CODE>", "message": "<human-readable>", "details": { ... } }`. Defined codes used across tools: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `CYCLE_DETECTED`, `POSITION_TAKEN`, `ADAPTER_NOT_CONFIGURED`, `UPSTREAM_ERROR`, `UNAUTHORIZED`.
+- Errors are structured: `{ "code": "<ERROR_CODE>", "message": "<human-readable>", "details": { ... } }`. Defined codes used across tools: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `CYCLE_DETECTED`, `ADAPTER_NOT_CONFIGURED`, `UPSTREAM_ERROR`, `UNAUTHORIZED`.
 - `project_id` is a required input on every tool except `kt_register_project`. Passing a `track_id`, `item_id`, `event_id`, or `decision_id` that exists but does not belong to the given `project_id` is always a `NOT_FOUND` error (scoped lookup, not global lookup) — this prevents one project's IDs from ever being usable to read or write another project's data, which matters once a single instance hosts more than one project.
 - No tool call is retried automatically by the server; MCP clients are responsible for their own retry policy. All writes are wrapped in a single database transaction, so a failed call never leaves partial rows (see §5.2).
 - Pagination: v1 does not paginate `kt_list_tracks` or track/item listings — the realistic scale for one project's structured plan (tens of tracks, hundreds of items) does not need it. The one genuinely unbounded log, Events, is controlled instead by a `since` timestamp (on `kt_check_drift`) and a hard cap (`event_limit`, max 100, on `kt_get_project_status`) rather than cursor pagination — this is deliberately simpler than pagination for a dataset this shape, and is a stated v1 scope decision, not an oversight.
 
 ### 4.1 `kt_register_project`
 
-**Description:** One-time setup of a Project in a KnoTrack instance. Must be called before any other tool can reference the project.
+**Description:** Registers a Project, or upserts one on `(source_type, source_ref)` — calling it again with the same pair updates the existing row (name, adapters) and returns the *original* `project_id` rather than erroring or creating a duplicate. This is also the only mechanism to add or rotate adapter credentials after initial registration, since credentials are supplied directly in the call rather than read from server-side configuration.
 
 **Inputs:**
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `name` | string, 1–200 chars | yes | Must be unique per instance, case-insensitive. |
-| `root_path` | string (absolute local path) | conditionally | At least one of `root_path` / `repo_url` required. |
-| `repo_url` | string (URL) | conditionally | At least one of `root_path` / `repo_url` required. Both may be set (e.g., a local checkout of a tracked repo). |
-| `adapters_enabled` | array of `"github" \| "linear"` | no, default `[]` | See business rules. |
+| `name` | string, 1–200 chars | yes | Display name. Not required to be unique — uniqueness is on `(source_type, source_ref)`, not `name` (see Business rules). |
+| `source_type` | enum: `"github" \| "linear" \| "local"` | yes | What kind of source `source_ref` identifies. |
+| `source_ref` | string, 1–500 chars | yes | Repo URL, Linear project ID, or local filesystem path, depending on `source_type`. |
+| `adapters` | object `{ github?, linear? }` | no | Per-adapter credentials, supplied directly in the call (not read from server env vars). `github: { personal_access_token, repo? }`; `linear: { api_key, team_id }`. |
 
-**Output:** `{ project_id, name, root_path, repo_url, adapters_enabled, created_at, warnings: [] }`
+**Output:** `{ project_id }`
 
 **Business rules / edge cases:**
-- Neither `root_path` nor `repo_url` supplied → `VALIDATION` error; registration is rejected entirely (there is no valid project without at least one).
-- Duplicate `name` (case-insensitive) → `CONFLICT` error whose `details` includes the existing `project_id`, so the caller can switch to using the existing project instead of assuming they must rename.
-- Requesting an adapter in `adapters_enabled` for which the server has no corresponding credential configured (`GITHUB_TOKEN` / `LINEAR_API_KEY` env var, per §5.3) does **not** fail the whole registration. Registration succeeds, that adapter is silently dropped from the returned `adapters_enabled`, and a entry is added to `warnings` naming which credential is missing and how to configure it. *Rationale: failing the entire registration over an unrelated adapter misconfiguration would block the most common first action (getting a project registered at all) for a mistake the installer can fix afterward with zero data loss — fail-soft here, fail-loud on the sync tools themselves (§4.13, §4.14) where the missing credential actually matters.*
+- Uniqueness is enforced on `(source_type, source_ref)`, not on `name`. Calling again with the same `(source_type, source_ref)` pair upserts: name and any supplied adapter credentials are updated on the existing row, and the call returns that row's original `project_id` — never a `CONFLICT`, never a duplicate project.
+- Credentials in `adapters.github`/`adapters.linear` are encrypted (AES-256-GCM, §5) before being persisted to the separate `adapter_credentials` table; they are never echoed back in this or any other tool's output.
+- If encrypting or persisting a supplied adapter credential fails (e.g. a crypto/database error), the whole call fails with a generic `500 INTERNAL_ERROR` rather than partially succeeding — this is a hard failure, not a soft-fail-with-warnings path. There is no "requested an adapter with no credential configured" case, since credentials are supplied inline on the call rather than resolved from server-side configuration.
 
 **Acceptance criteria:**
-- **Given** no project named "Acme API" exists, **when** `kt_register_project` is called with `name: "Acme API", root_path: "/home/dev/acme-api"`, **then** the call succeeds and returns a new `project_id` with `adapters_enabled: []`.
-- **Given** a project named "Acme API" already exists, **when** `kt_register_project` is called again with `name: "acme api"` (different case), **then** the call fails with `CONFLICT` and `details.existing_project_id` set.
-- **Given** neither `root_path` nor `repo_url` is supplied, **when** `kt_register_project` is called, **then** the call fails with `VALIDATION`.
-- **Given** `adapters_enabled: ["github"]` is supplied and no `GITHUB_TOKEN` is configured on the server, **when** `kt_register_project` is called, **then** the call succeeds, the returned `adapters_enabled` is `[]`, and `warnings` contains one entry naming `GITHUB_TOKEN` as missing.
+- **Given** no project exists with `source_type: "github", source_ref: "acme/widgets"`, **when** `kt_register_project` is called with `name: "Acme API", source_type: "github", source_ref: "acme/widgets"`, **then** the call succeeds and returns a new `project_id`.
+- **Given** a project already exists with `source_type: "github", source_ref: "acme/widgets"`, **when** `kt_register_project` is called again with the same `source_type`/`source_ref` and a different `name`, **then** the call succeeds, the existing row's `name` is updated, and the same `project_id` as before is returned.
+- **Given** a valid `adapters.github.personal_access_token` is supplied, **when** `kt_register_project` is called, **then** the call succeeds and the token is stored encrypted in `adapter_credentials`, never appearing in the tool's output or in any other tool's output.
 
 ### 4.2 `kt_get_project_status`
 
@@ -289,14 +288,14 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 **Output:** `{ item_id, track_id, title, sequence_position, depends_on, file_patterns, status, created_at }`
 
 **Business rules / edge cases:**
-- `sequence_position` uniqueness is enforced **per track**. If the caller supplies a position already taken within that track, KnoTrack does **not** auto-renumber existing items — it rejects the call with `POSITION_TAKEN` and `details.next_free_position`. *Rationale: silently shifting other items' declared positions is a hidden side effect on data the caller didn't touch; an explicit rejection with the next free slot keeps sequencing fully caller-controlled.*
+- `sequence_position` is **not** required to be unique per track at the database level (see `docs/DATABASE_SCHEMA.md`'s `items` table). If the caller supplies a position already taken within that track, KnoTrack shifts every existing item at or after that position up by one (an atomic `UPDATE ... WHERE track_id = $1 AND sequence_position >= $2` inside the same transaction as the insert) so the new item lands at the requested position without ever producing a duplicate. *Rationale: rejecting the call would push the renumbering decision onto every caller; shifting keeps `sequence_position` values always contiguous and unique in practice without requiring a database-level uniqueness constraint that would make concurrent reordering race-prone.*
 - `depends_on` cycle detection runs over the **whole project's item-dependency graph** (not scoped to one track), since items can depend cross-track; on cycle, `CYCLE_DETECTED` with the cycle path.
 - Each entry in `file_patterns` is validated as syntactically valid glob syntax; an invalid entry → `VALIDATION` naming which pattern failed.
 - `depends_on` referencing an item not in this project → `VALIDATION`.
 
 **Acceptance criteria:**
 - **Given** track T has items at positions 1 and 2, **when** `kt_create_item` is called with no `sequence_position`, **then** the new item is assigned position 3.
-- **Given** track T already has an item at position 2, **when** `kt_create_item` is called with `sequence_position: 2`, **then** the call fails with `POSITION_TAKEN` and `details.next_free_position == 3`.
+- **Given** track T has items at positions 1, 2, and 3, **when** `kt_create_item` is called with `sequence_position: 2`, **then** the call succeeds, the new item takes position 2, and the existing items previously at positions 2 and 3 now sit at 3 and 4 respectively.
 - **Given** `file_patterns: ["src/**/*.ts", "[invalid"]`, **when** `kt_create_item` is called, **then** the call fails with `VALIDATION` naming `"[invalid"` as the offending pattern.
 - **Given** item A depends on item B and B depends on item C, **when** `kt_create_item` is called to create/update C such that it would depend on A, **then** the call fails with `CYCLE_DETECTED`.
 
@@ -483,14 +482,14 @@ Note: `client_id` is never a body parameter — it is resolved server-side from 
 
 - No formal uptime SLA is offered or meaningful for a self-hosted, installer-operated tool — uptime is the installer's own operational responsibility. KnoTrack's reliability requirements instead focus on **data integrity**, which the maintainers do control through the software's design:
   - Event and Decision rows are strictly append-only at the application layer: the codebase must never issue an `UPDATE` or `DELETE` against the `events` or `decisions` tables under any code path. This is enforced by code review discipline plus a database-level revoke of `UPDATE`/`DELETE` privileges on those two tables for the application's DB role, so even a bug cannot silently rewrite history.
-  - Every multi-statement write across the 13 tools (e.g., `kt_record_session_summary`'s Event insert + drift-cache update; `kt_create_item`'s position check + insert) is wrapped in a single database transaction. A failure partway through never leaves partial rows.
+  - Every multi-statement write across the 14 tools (e.g., `kt_record_session_summary`'s Event insert + drift-cache update; `kt_create_item`'s position check + insert) is wrapped in a single database transaction. A failure partway through never leaves partial rows.
   - Performance target: `kt_check_drift` and `kt_get_next_steps` must complete in under 2 seconds for a project with up to 500 Items and 5,000 Events, measured on the smallest documented deploy tier (Render free). This bound is chosen because it is the ceiling of a realistic single-project, single-team scale (§4.0's pagination rationale) — not an enterprise-scale target.
 
 ### 5.3 Security
 
 - **Bearer tokens, one per client device**, held client-side only in that tool's own MCP config (e.g., an environment variable or config field the harness reads to set the `Authorization: Bearer <token>` header). Tokens are opaque random 256-bit values.
 - Token issuance is **not** an MCP tool — it is a server-side CLI/admin command run by the installer directly on the server (`knotrack create-token --project <id> --label <device-name>`), because a stateless MCP tool call would need a token to already exist in order to be authenticated in the first place. Issuance prints the raw token exactly once; it is stored server-side only as a salted hash (bcrypt or argon2id) and is never retrievable or re-displayed after creation. Revocation is `knotrack revoke-token <token-id>`, also a server-side CLI command.
-- Every one of the 13 MCP tool calls requires a valid, unrevoked bearer token. The token resolves to a `client_id` server-side; this resolved `client_id`, not any client-supplied field, is what gets stamped onto Events (§4.8), preventing a client from claiming to be a different device than the one it authenticated as.
+- Every one of the 14 MCP tool calls requires a valid, unrevoked bearer token. The token resolves to a `client_id` server-side; this resolved `client_id`, not any client-supplied field, is what gets stamped onto Events (§4.8), preventing a client from claiming to be a different device than the one it authenticated as.
 - Adapter credentials (`GITHUB_TOKEN`, `LINEAR_API_KEY`) are configured **only** via server-side environment variables or a server-side config file. They are never accepted as a parameter on any MCP tool, and never appear in any MCP tool's input or output schema — this guarantees they can never transit through a client-side MCP config file or end up inside an agent's context window.
 - No cross-project data leakage: every scoped lookup (track/item/event/decision under a `project_id`) is validated as belonging to that project before being returned or mutated (§4.0), even though a single instance is single-tenant — this protects an installer who registers more than one unrelated project on the same instance.
 
@@ -542,7 +541,7 @@ Because KnoTrack collects no central telemetry (§5.6), every metric below is so
 - **Automatic parsing of arbitrary local roadmap/spec file formats.** As stated in §1.3, KnoTrack does not itself ingest free-text planning documents from a local folder; the calling agent reads them and populates Tracks/Items via `kt_create_track`/`kt_create_item`. Only GitHub and Linear have structured import paths in v1.
 - **Centralized, maintainer-run hosting or analytics.** There is no multi-tenant SaaS version of KnoTrack, and no telemetry collection of any kind (§5.6). "Open source, self-hosted" is the whole distribution model for v1, not a stepping stone the PRD assumes will change.
 - **A standalone chat or web-app interface.** KnoTrack in v1 is purely an MCP tool surface. Whatever conversational interface a user experiences is provided entirely by the calling agent harness (Claude Code, Windsurf, etc.), not by KnoTrack itself.
-- **Deleting or editing Tracks, Items, Events, or Decisions.** No tool in the 13 supports deletion or retroactive editing of any entity (status changes on Items are the one intentional exception, via `kt_update_item_status`, and are themselves append-only in effect since prior states remain visible in Event history). Corrections happen by recording new, forward-looking data (a new Decision, a new status), never by rewriting old rows.
+- **Deleting or editing Tracks, Items, Events, or Decisions.** No tool in the 14 supports deletion or retroactive editing of any entity (status changes on Items are the one intentional exception, via `kt_update_item_status`, and are themselves append-only in effect since prior states remain visible in Event history). Corrections happen by recording new, forward-looking data (a new Decision, a new status), never by rewriting old rows.
 
 ---
 

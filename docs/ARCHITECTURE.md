@@ -128,9 +128,9 @@ flowchart TB
 Notes on the module boundaries:
 
 - **Transport & Tool Router** owns MCP protocol framing and dispatches each
-  of the 13 tools to exactly one service method. It holds no business logic.
+  of the 14 tools to exactly one service method. It holds no business logic.
 - **Auth Middleware** sits between the router and every service — it is not
-  optional per-tool, it is structurally in the path for all 13 tools.
+  optional per-tool, it is structurally in the path for all 14 tools.
 - **Domain/Service Layer** is one service per entity (Project, Track, Item,
   Event, Decision) so a schema or rule change to one entity never leaks into
   another's code path.
@@ -514,7 +514,7 @@ only one that represents "here is what I observe, ranked."
 - The `pg` pool's health check fails; Fastify's `/health` endpoint reports
   unhealthy so platform-level restarts/alerts (Render/Railway/Fly health
   checks) can react.
-- Every tool that touches the DB — which is all 13 — returns a structured
+- Every tool that touches the DB — which is all 14 — returns a structured
   MCP tool error (JSON-RPC error object, HTTP 503) rather than crashing the
   process or hanging the request. The pool is configured with a bounded
   connection-acquire timeout so a request fails fast instead of queuing

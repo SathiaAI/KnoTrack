@@ -1,6 +1,6 @@
 # KnoTrack MCP Server — Test Cases
 
-Scope: the 13 MCP tools exposed by KnoTrack (self-hosted MCP server for project
+Scope: the 14 MCP tools exposed by KnoTrack (self-hosted MCP server for project
 management support). This document is the test-case spec a builder should be
 able to implement against directly, without inventing missing cases.
 
@@ -18,7 +18,7 @@ These are fixed once here so individual rows don't repeat the reasoning.
    via status-code oracle). 404 gives the same signal for "doesn't exist"
    and "not yours," which is the safer default. All test rows below use 404
    for this case; if an implementation deliberately chooses 403 instead, it
-   must do so consistently across all 13 tools and all ID types (project,
+   must do so consistently across all 14 tools and all ID types (project,
    track, item) — a mix of 403 and 404 depending on which ID mismatches is
    itself a bug worth its own test (see AUTH-08).
 2. **Auth failure status code: 401** for missing, malformed, expired, or
@@ -80,7 +80,7 @@ These are fixed once here so individual rows don't repeat the reasoning.
 
 ## 1. Cross-Cutting Auth Tests
 
-These patterns apply identically to **all 13 tools**. This section is the
+These patterns apply identically to **all 14 tools**. This section is the
 canonical, exhaustive matrix; the per-tool sections below include only the
 one or two auth rows most relevant to that tool's shape, and reference this
 section for the rest — a full test suite replicates AUTH-01..AUTH-08 against
@@ -95,7 +95,7 @@ every tool, not just the representative tool shown here (`kt_get_project_status`
 | AUTH-05 | All tools | Negative | A token that was valid but has since passed its expiry timestamp | Expired bearer token | 401 (not 200 with stale claims) |
 | AUTH-06 | All tools | Negative | A token that was valid but has been explicitly revoked (e.g. project deleted, token rotated) | Revoked bearer token | 401 |
 | AUTH-07 | All tools | Negative | Token is invalid AND the referenced `project_id` does not exist either | Invalid/expired token + nonexistent `project_id` | 401 (auth check short-circuits before existence check — never 404) |
-| AUTH-08 | All tools | Negative | Two projects P1 (token T1) and P2 (token T2) both exist | Call with token T2 against P1's `project_id` | 404 (per Convention #1) — verify this is consistent across all 13 tools and all ID kinds (project/track/item), not just project-level |
+| AUTH-08 | All tools | Negative | Two projects P1 (token T1) and P2 (token T2) both exist | Call with token T2 against P1's `project_id` | 404 (per Convention #1) — verify this is consistent across all 14 tools and all ID kinds (project/track/item), not just project-level |
 | AUTH-09 | All tools | Negative | Valid project exists | Bearer token belonging to a *different, entirely unrelated* deployment/tenant format (e.g. right shape, signed by a different key) | 401, not 404 — signature/issuer invalidity is an auth failure, not a scoping failure |
 
 ---
@@ -478,7 +478,7 @@ API alone makes an exact scenario hard to force.
 ## 19. Adapter Tests
 
 Covers the two sync tools' error handling plus the credential-leakage sweep
-that applies across all 13 tools.
+that applies across all 14 tools.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
@@ -486,7 +486,7 @@ that applies across all 13 tools.
 | ADAPT-02 | kt_sync_to_linear | Negative | No linear adapter configured | Call `kt_sync_to_linear` | `{ok:false, error:"..."}`, clean (duplicate of LNSY-02) |
 | ADAPT-03 | kt_sync_to_github | Negative | Neither adapter configured at all | Call `kt_sync_to_github` | `{ok:false, error:"..."}` — same clean failure even in the "no adapters of any kind" case, not a different/worse error path |
 | ADAPT-04 | kt_sync_to_linear | Negative | Neither adapter configured at all | Call `kt_sync_to_linear` | `{ok:false, error:"..."}` clean |
-| ADAPT-05 | **All 13 tools** | Negative (credential-leakage sweep) | Project registered with `adapters={github:{token:"ghp_SECRETVALUE..."}, linear:{token:"lin_SECRETVALUE..."}}` | Run one representative successful call to each of the 13 tools against this project (register, get_status, list_tracks, get_track, get_next_steps, create_track, create_item, record_session_summary, record_decision, update_item_status, check_drift, render_roadmap, sync_to_github, sync_to_linear) | For every single response body, the raw JSON contains neither `ghp_SECRETVALUE...` nor `lin_SECRETVALUE...` nor any ≥8-character substring of either, in any field including nested objects, error messages, and echoed `source_ref`/`adapters` structures |
+| ADAPT-05 | **All 14 tools** | Negative (credential-leakage sweep) | Project registered with `adapters={github:{token:"ghp_SECRETVALUE..."}, linear:{token:"lin_SECRETVALUE..."}}` | Run one representative successful call to each of the 14 tools against this project (register, get_status, list_tracks, get_track, get_next_steps, create_track, create_item, record_session_summary, record_decision, update_item_status, check_drift, render_roadmap, sync_to_github, sync_to_linear) | For every single response body, the raw JSON contains neither `ghp_SECRETVALUE...` nor `lin_SECRETVALUE...` nor any ≥8-character substring of either, in any field including nested objects, error messages, and echoed `source_ref`/`adapters` structures |
 | ADAPT-06 | kt_get_project_status | Negative (credential-leakage, error path) | Adapter credential configured; then trigger an internal error path if one exists (e.g. malformed downstream state) | Call that surfaces an error | Even error responses/stack traces (if any are exposed) contain no credential material |
 | ADAPT-07 | kt_register_project | Negative (credential-leakage, at creation) | None | Register a project with adapter credentials | The `{project_id}` response itself contains no credential echo, not even partially masked-but-derivable (e.g. not last-4-plus-length in a way that narrows brute force meaningfully beyond what's operationally necessary) |
 | ADAPT-08 | kt_sync_to_github / kt_sync_to_linear | Negative | Adapter configured for github only; caller calls `kt_sync_to_linear` | Call `kt_sync_to_linear` | `{ok:false, error:"..."}` — must not fall back to or accidentally use the github adapter, and must not error in a way that reveals whether a *different* adapter is configured beyond what's necessary |
@@ -505,4 +505,4 @@ For traceability against the task brief:
 - [x] Drift detection: undone-dependency flag, unmapped-file flag, no-flag-on-clean-work, resolved-flag-doesn't-reappear-unless-recurring (§13)
 - [x] `kt_get_next_steps`: unblocked-only, empty-when-all-blocked-or-done, explicit never-writes negative test (§12)
 - [x] `kt_render_roadmap`: reflects current DB state exactly, twice-with-no-changes byte-identical, explicit zero-writes negative test (§14)
-- [x] Adapters: no-adapter-configured clean error (not crash) for both sync tools, credential-never-in-response swept across all 13 tools (§15, §16, §19)
+- [x] Adapters: no-adapter-configured clean error (not crash) for both sync tools, credential-never-in-response swept across all 14 tools (§15, §16, §19)
