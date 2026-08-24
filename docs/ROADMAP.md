@@ -675,8 +675,8 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   encrypted credentials can exist in any deployment right now, well
   before `T5`'s sync clients are built. A compromised
   `KNOTRACK_ENCRYPTION_KEY` today has no rotation path for whatever
-  credentials are already stored. Should be prioritized ahead of, not
-  after, further `T5` work.
+  credentials are already stored. The team should prioritize
+  encryption-key rotation ahead of, not after, further `T5` work.
 - **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
   Appendix B's `SYNC_DRIFT` drift-flag rule depends on
   `last_github_sync_at`/`last_linear_sync_at` columns that don't exist

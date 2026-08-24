@@ -753,7 +753,7 @@ Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `
 - **Per-secret encryption:**
   1. Generate a fresh random 12-byte IV: `crypto.randomBytes(12)` (12 bytes / 96 bits is the AES-GCM-recommended nonce size).
   2. `const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: 16 })` — `authTagLength` is passed explicitly, not left to the Node default, so the paired decrypt call (below) enforces exactly a 16-byte tag rather than silently accepting a shorter one.
-  3. `const ciphertext = Buffer.concat([cipher.update(plaintextUtf8, 'utf8'), cipher.final()])`
+  3. `const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])`
   4. `const authTag = cipher.getAuthTag()` (16 bytes)
   5. Pack `iv || authTag || ciphertext` into a single buffer and persist it as `adapters.encrypted_credential` (see Storage, below — the real schema has no separate `key_version` column; see the "Known gap" bullet for the rotation implication of that).
 - **Decryption:**
