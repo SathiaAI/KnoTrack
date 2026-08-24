@@ -452,8 +452,10 @@ partway through this build. Recorded here so the decisions aren't re-litigated l
   deterministic, self-hosted, no-daemon design already settled on
   (see `ARCHITECTURE.md` §6, the anti-orchestrator argument). Rejected.
 
-**Deferred from the v1 adversarial review (see `suppressions.json` in the
-review run for the full technical justification and expiry dates):**
+**Deferred from the v1 adversarial review (see `.adversarial-review/run-20260823-020205/report.md`
+and `suppressions.json` in that run for full technical justification, reproduction notes, and
+expiry dates). All items below were confirmed real by direct code reading during that review —
+none are guesses — but judged disproportionate to fix reactively under review pressure:**
 - **`T9.x` (new, unscheduled) — DB-operation retry/backoff.** No service
   function retries a transient DB failure (connection reset, serialization
   error) today; a failure just fails fast and rolls back cleanly (the
@@ -462,4 +464,99 @@ review run for the full technical justification and expiry dates):**
   generic retry layer needs to reason about which operations are safe to
   retry blindly, which is a bigger, cross-cutting change than fits
   reactively inside one review; tracked here instead of built ad hoc.
-  Suppression expires 2026-11-23 — revisit before then.
+  Suppression expires 2026-11-23 — revisit before then. (Findings
+  `reliability-2`, `reliability-5`.)
+- **`T9.x` (new, unscheduled) — bound `files_touched` and adapter-secret
+  input sizes.** `kt_record_session_summary`'s `files_touched` array and
+  `kt_register_project`'s `adapters.*` credential strings have no `.max()`
+  bound in `src/schemas/tools.ts` — an authenticated caller can submit
+  arbitrarily large payloads, a storage/memory DoS vector. Needs a handful
+  of Zod `.max()` additions; small but not done reactively under review.
+  (Finding `security-3`.)
+- **`T9.x` (new, unscheduled) — stop echoing raw exception text to
+  clients.** `register-project.ts`'s error path puts the raw driver/crypto
+  exception message on `details.cause`, which `runTool` serializes verbatim
+  into the client-facing error envelope — a low-severity internals leak.
+  Needs the same "log full detail server-side, return a generic message"
+  treatment already used elsewhere. (Finding `security-4`.)
+- **`T9.x` (new, unscheduled) — stop disclosing Node.js version on
+  unauthenticated `/info`.** Low-severity recon surface for an attacker
+  fingerprinting the server. (Finding `security-5`.)
+- **`T9.x` (new, unscheduled) — close `hasOpenFlagForItem`'s TOCTOU race.**
+  Same check-then-insert race family as `correctness-1` (already fixed for
+  sequence-position auto-assign via `SELECT ... FOR UPDATE`), but for
+  drift-flag dedup: concurrent `record_session_summary` calls can insert
+  duplicate open flags for the same item. Likely closes with the same
+  partial-unique-index pattern used for `correctness-1`'s fix. (Finding
+  `correctness-2`.)
+- **Needs a product decision, not a code fix — `findSequenceSkips`'
+  "complete" definition.** The reviewer flagged (confidence 0.3, genuinely
+  ambiguous against TRD text) that `findSequenceSkips` treats an item with
+  status `in_progress` as "complete" for ordering purposes. Before this is
+  actionable, Paul needs to say whether `in_progress` should count as
+  complete for sequence-skip detection or not — this is a semantics
+  question, not a bug with an obvious fix. (Finding `correctness-3`.)
+- **`T9.x` (new, unscheduled) — five test-coverage gaps, no behavior
+  change.** (1) `kt_record_session_summary`: no 404 test for
+  `items_touched` referencing a nonexistent item id. (2) `runTool`'s error
+  envelope shape and generic-error redaction has no direct unit test. (3)
+  `kt_register_project`'s Linear-adapter credential encryption path is
+  untested (only GitHub's is). (4) `kt_get_project_status`: no test
+  verifies `drift_flags` field mapping when open flags actually exist. (5)
+  No test verifies a soft-deleted project (`deleted_at` set) is rejected by
+  every service function, not just some. All confirmed real gaps, all
+  test-only additions. (Findings `test_quality-1` through `test_quality-5`.)
+- **`T9.x` (new, unscheduled) — structured logging for drift-scan
+  outcomes.** No log line records drift-scan duration, item count scanned,
+  or flags raised per `kt_record_session_summary` call — an observability
+  gap, not a correctness one. (Finding `reliability-6`.)
+
+**Accepted risk, not a backlog item — the single shared-token trust model.**
+Findings `security-1` and `security-3` from the *initial* panel pass (distinct
+from the `security-3` above, which is from the final rerun and reused the same
+id) argued that any valid bearer token can read/write any project on the
+instance, including rotating another project's adapter credentials via
+`kt_register_project`'s upsert. `docs/TRD.md` §4/§7 document this as the
+deliberate v1 trust boundary — one instance, one operator, one trust domain;
+isolating two teams means running two instances — not an omission. Suppression
+expires 2027-02-23. Revisit only if a genuine multi-tenant (multiple mutually
+untrusting operators on one instance) need shows up; until then, nothing to
+build.
+
+**Deferred from PR #1's CodeRabbit review round (2026-08-23/24) — architecture/
+scope decisions, not bugs, per the `clear-decisions` walkthrough:**
+- **`T9.x` (new, unscheduled) — a path to unblock a `blocked` track.**
+  `kt_create_track` can set a track to `blocked` when a declared dependency
+  isn't `done`, but there is no write path from `blocked` back to
+  `on_track` or `done` once created — dependents stay blocked permanently.
+  Deferred until a real caller actually hits this (no current tool
+  triggers the transition back).
+- **`T9.x` (new, unscheduled) — `@modelcontextprotocol/sdk` v1 → v2
+  migration.** Needed for `server/discover` and the 2026-07-28 protocol
+  revision's stateless discovery mechanism. Breaking (modular v2 packages,
+  ESM-first, Zod `^4.2.0` requirement), touches every tool registration and
+  the core transport. Deferred indefinitely — no current forcing need.
+- **`T9.x` (new, unscheduled) — migration rollback (`down`) mode.**
+  `scripts/migrate.ts` only applies migrations forward; there's no guarded
+  mode to run `.down.sql` files in reverse and remove their ledger entries.
+  Note this isn't just a TRD gap: `T2.1` above states `migrate down`
+  cleanly reverses `001_init.sql` as its own acceptance criterion, so this
+  was always intended, not merely documented aspirationally. Deferred
+  until a real forward migration actually needs reverting.
+- **`T9.x` (new, unscheduled) — finish propagating the source_type/
+  source_ref registration model through the remaining docs.** Commits
+  `5809ae4`/`bca45ff` fixed the "13 tools"/ID-format/cross-track-deps/
+  credential-contract drift in `PRD.md` sections 4.1, 4.4, 4.7, 5.3, and
+  the Appendix, but did not touch: `kt_get_project_status`'s own PRD
+  section (still describes a `{ project: { root_path, repo_url,
+  adapters_enabled } }` shape that `get-project-status.ts` doesn't return
+  at all — flagged as its own separate drift in commit `208c90b`, not
+  re-verified this round); `kt_render_roadmap`, `kt_sync_to_github`, and
+  `kt_sync_to_linear`'s PRD sections (all three are unimplemented v1 stubs
+  — `src/mcp/tools/stubs.ts` — so there's no real code yet to verify the
+  `root_path`/`repo_url`/`adapters_enabled`/`GITHUB_TOKEN`/`LINEAR_API_KEY`
+  prose against); and one stray `root_path`/`repo_url` mention in PRD.md
+  §6's glossary. Needs a pass once `kt_get_project_status` is re-verified
+  against real code and/or the sync tools get real implementations —
+  documenting the sync tools' contract now would be speculative ahead of
+  building them.
