@@ -245,6 +245,18 @@ The top-level entity: one row per tracked codebase/initiative.
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Auto-maintained by `trg_projects_set_updated_at` |
 | `deleted_at` | `timestamptz` | nullable | `NULL` = active. See [Soft delete](#soft-delete-vs-hard-delete-for-projects) |
 
+**Constraints:** `uq_projects_source_ref_active` (added by
+`migrations/002_projects_unique_source_ref.sql`) — unique partial index on
+`(source_type, source_ref) WHERE deleted_at IS NULL`. Backs the documented
+`kt_register_project` upsert invariant ("`(source_type, source_ref)` is
+unique; calling again with the same pair updates the existing row, never
+creates a duplicate") at the database level via `INSERT ... ON CONFLICT ...
+DO UPDATE` targeting this index, closing a race where two concurrent
+first-registrations of the same `source_ref` could otherwise both insert.
+Scoped to non-soft-deleted rows, so multiple soft-deleted projects (or
+`source_type='local'` projects, which have `source_ref IS NULL`) never
+collide — Postgres unique indexes treat `NULL` as distinct from `NULL`.
+
 **Indexes:** `idx_projects_not_deleted` — partial index on `(id) WHERE deleted_at IS
 NULL`, backing the "active projects" filter every read path applies.
 
@@ -461,6 +473,19 @@ tracked state — e.g. a file changed that isn't linked to any known item
 | `detail` | `jsonb` | `NOT NULL DEFAULT '{}'` | Structured detail specific to `kind` (e.g. the offending file path, or the expected vs. actual sequence position) |
 | `raised_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 | `resolved_at` | `timestamptz` | nullable | `NULL` = still open. Set once a human or automated process resolves the flag. |
+
+**Constraints:** `uq_drift_flags_open_item_kind` (added by
+`migrations/003_drift_flags_open_unique.sql`) — unique partial index on
+`(item_id, kind) WHERE resolved_at IS NULL`. Backs the "at most one open
+flag per `(item_id, kind)`" invariant the rest of the system assumes, at
+the database level via `INSERT ... ON CONFLICT ... DO NOTHING` in
+`src/db/queries/drift-flags.ts`, closing a race where two concurrent
+`kt_record_session_summary` calls scanning the same out-of-sequence item
+could otherwise both insert an open flag for it. `item_id` is nullable
+(`ON DELETE SET NULL`), so multiple resolved-at-null rows with
+`item_id IS NULL` would remain unaffected by this constraint — not a gap
+in practice, since the only kind this build raises (`out_of_sequence`)
+always sets `item_id`.
 
 **Indexes:**
 - `idx_drift_flags_project_id` on `(project_id)`

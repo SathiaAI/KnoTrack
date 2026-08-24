@@ -221,8 +221,16 @@ describe:
   papered over here. `T6.2` (orphan-file-change) isn't implemented at
   all, so `T6.3`'s "both heuristics" criterion is unmet regardless of
   how `T6.1` gets reconciled. `T2.11` (`kt_check_drift`) and the two
-  sync stubs (`T2.13`, `T2.14`) do match their stub-only acceptance
-  criteria as written.
+  sync stubs (`T2.13`, `T2.14`) do **not** actually match their
+  stub-only acceptance criteria either, on closer check:
+  `registerStubTools` routes every one of the 9 stub tools through the
+  same generic `notImplementedResult` (`src/mcp/tool-helpers.ts`), which
+  always returns a uniform `500 INTERNAL_ERROR` — not `T2.11`'s specific
+  "empty result with a `no heuristics configured` note", and not
+  `T2.13`/`T2.14`'s specific "adapter not configured" result after
+  validating the item exists. The generic-500 stub shape is the same for
+  all 9 unimplemented tools; none of the three has the bespoke
+  stub-response behavior its own T2 line calls for.
 - Nothing in `T1.6`'s "cross-document consistency... zero open
   discrepancies" gate accounted for this Track-vs-build gap either — it
   checks the docs against each other, not the docs against what actually
@@ -648,6 +656,20 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   started). None of these are load-bearing the way the fixed ones were,
   but they're stale and should be swept in one pass rather than
   piecemeal.
+- **`T9.x` (new, unscheduled) — encryption-key rotation.** TRD §5's
+  "Known gap" bullet says compromising `KNOTRACK_ENCRYPTION_KEY` today
+  has no in-band recovery path: there is no `key_version` column on
+  `adapters` (so old and new keys can't be run side-by-side mid-rotation)
+  and no `scripts/rotate-encryption-key.ts` (or corresponding
+  `package.json` script) to do the re-encrypt sweep. This item is what
+  that TRD bullet points to as "tracked as follow-up work" — previously
+  that claim wasn't backed by an actual backlog entry. Needs: a new
+  migration adding `adapters.key_version integer NOT NULL DEFAULT 1`,
+  and a rotation script that decrypts every `adapters.encrypted_credential`
+  with the key matching its row's `key_version`, re-encrypts with the
+  new key, and bumps `key_version`. Not urgent pre-`T5` (no adapter rows
+  exist to rotate yet), but should land before `T5` ships if adapter
+  credentials go live before this is built.
 - **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
   Appendix B's `SYNC_DRIFT` drift-flag rule depends on
   `last_github_sync_at`/`last_linear_sync_at` columns that don't exist
@@ -657,11 +679,20 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   either — this rule was never built, only specified), but it means
   `SYNC_DRIFT` can't be implemented as currently documented without a
   schema change first. This needs Paul's call, not a guess: add the two
-  `last_*_sync_at` columns via a new migration (and decide whether they
-  belong on `tracks` or on `adapters` scoped by type), or redefine the
-  rule against columns that already exist. Blocks real progress on `T6`
-  until decided; not urgent before then since `T6` depends on `T5`
-  (adapters), which hasn't started.
+  `last_*_sync_at` columns via a new migration. They must be scoped per
+  **track** (either directly on `tracks`, or on a new join table keyed
+  by both `track_id` and `adapter_id`) — **not** on `adapters` alone.
+  `uq_adapters_project_type` allows only one `adapters` row per
+  `(project_id, type)`, so a project with multiple tracks syncing
+  through the same GitHub/Linear adapter would share a single
+  `last_*_sync_at` value: syncing one track would advance that shared
+  timestamp and make every other unsynced track in the project look
+  current too. Putting the column(s) on `adapters` is not a valid
+  alternative to `tracks` for any project with more than one track using
+  the same adapter type — only "redefine the rule against columns that
+  already exist" remains a real alternative to a `tracks`-scoped column.
+  Blocks real progress on `T6` until decided; not urgent before then
+  since `T6` depends on `T5` (adapters), which hasn't started.
 - **Process note, not a backlog item — `T1.6`'s sign-off gate has never
   formally closed.** `T1.6`'s acceptance criterion is a cross-document
   consistency pass with "zero open discrepancies," recorded in
