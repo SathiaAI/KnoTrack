@@ -25,7 +25,7 @@ Deployment model: **self-hosted, single-tenant per instance.** One running KnoTr
 | MCP implementation | `@modelcontextprotocol/sdk` (official) | Only implementation guaranteed to track the MCP spec's wire format and transport details across revisions; hand-rolling JSON-RPC framing is pure risk with no upside. |
 | Database | PostgreSQL (only supported DB) | One of three documented deploy targets is Render's free tier, which has **no attachable persistent local disk** — a SQLite/file-based DB would silently lose all data on every restart there. Postgres is available managed on all three targets (Supabase, Railway, Fly), so it's the only option that works identically everywhere. |
 | DB driver | `pg` (node-postgres) | Minimal, direct SQL, no query-builder magic to fight when writing the recursive/graph queries drift detection and dependency validation need. |
-| Migrations | `node-pg-migrate` | Produces plain, numbered, human-readable migration files that generate straight SQL; avoids pulling in a full ORM (Prisma/TypeORM) whose schema-modeling layer this project doesn't need and whose extra runtime/dependency weight self-hosted installers shouldn't have to carry. |
+| Migrations | Hand-written raw SQL + a small custom runner (`scripts/migrate.ts`) | An earlier draft of this doc specified `node-pg-migrate`; the shipped build instead uses plain numbered `<name>.sql`/`<name>.down.sql` pairs under `migrations/`, applied by a small idempotent runner that tracks applied migrations in a `schema_migrations` table (see `scripts/migrate.ts`'s header comment for the reasoning) — `node-pg-migrate` is not a project dependency. This still avoids a full ORM's (Prisma/TypeORM) schema-modeling layer and extra runtime weight, the same goal the original choice served; it just isn't `node-pg-migrate` specifically. |
 | HTTP framework | Fastify | Lightweight, first-class TypeScript types, low overhead, and its raw Node `req`/`res` are directly compatible with the MCP SDK's Streamable HTTP transport, which attaches to the raw HTTP layer rather than an Express-style middleware chain. |
 | Testing | Vitest | Native ESM/TS support with no Babel/ts-jest transform step; fast enough to run the full suite (unit + integration against a real Postgres) on every commit. |
 | Linting | ESLint + `typescript-eslint` | Type-aware lint rules catch a class of bugs (unsafe `any`, unchecked promise rejections) that matter a lot in code that talks to arbitrary untrusted MCP clients. |
@@ -691,7 +691,7 @@ Example operational-failure output (still a successful tool call):
 ```
 Other `error` string prefixes used: `GITHUB_AUTH_FAILED` (401/403 from GitHub — token revoked or insufficient scope), `GITHUB_NOT_FOUND` (repo or issue not found), `GITHUB_TIMEOUT` (exceeded `KNOTRACK_GITHUB_SYNC_TIMEOUT_MS`, default 8000ms), `GITHUB_UNKNOWN_ERROR` (anything else, with the upstream status code appended).
 
-Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no GitHub credentials configured for this project — i.e. no row in `adapter_credentials` for `(project_id, 'github')`); `422` (malformed uuid); `500` (credential decryption failure, unexpected local exception before the GitHub call was even attempted).
+Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no GitHub credentials configured for this project — i.e. no row in `adapters` for `(project_id, 'github')`); `422` (malformed uuid); `500` (credential decryption failure, unexpected local exception before the GitHub call was even attempted).
 
 ### 3.15 `kt_sync_to_linear`
 
@@ -762,9 +762,9 @@ Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `
   2. `decipher.setAuthTag(authTag)`
   3. `const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')`
   4. If `decipher.final()` throws (auth tag mismatch — tampered or corrupted ciphertext, or wrong key), the error is caught, logged server-side with no secret material in the log line, and surfaced to the caller as a generic `500 INTERNAL_ERROR` (never leaking which part of the crypto operation failed).
-- **Storage:** table `adapter_credentials` — `project_id`, `adapter_type` (`'github'` | `'linear'`), `ciphertext bytea`, `iv bytea`, `auth_tag bytea`, `key_version int default 1`, unique on `(project_id, adapter_type)`. See Appendix A for full DDL.
-- **Never returned:** the `projects.adapters` JSONB column stores **only non-secret metadata** — e.g. `{"github": {"repo": "acme/widgets", "connected": true}}` — and is what every read-path tool (`kt_get_project_status`, `kt_list_tracks`, `kt_get_track`) serializes. The `adapter_credentials` table is read **only** by `src/adapters/github/client.ts` and `src/adapters/linear/client.ts` immediately before making an outbound API call in `kt_sync_to_github`/`kt_sync_to_linear`, and its columns never appear in any tool's output type — there is no code path that could accidentally include them.
-- **Known gap — no key rotation path shipped in v1:** the `key_version` column exists specifically to support rotation later, but no rotation script or command ships yet — there is no `scripts/rotate-encryption-key.ts` and no corresponding `package.json` script. If `KNOTRACK_ENCRYPTION_KEY` is compromised today, the only recourse is manual: write and run a one-off script that loads every `adapter_credentials` row, decrypts with the old key, re-encrypts with a new key and fresh IV, writes back, and bumps `key_version`, then update `KNOTRACK_ENCRYPTION_KEY` and redeploy — the same shape a shipped `rotate-encryption-key` command would follow, just not packaged as one. This is tracked as follow-up work, to be built when key rotation is actually needed rather than speculatively now.
+- **Storage:** table `adapters` — `project_id`, `type` (`'github'` | `'linear'`), `encrypted_credential bytea` (a single packed blob: `iv (12 bytes) || authTag (16 bytes) || ciphertext`, per `src/crypto/credential-cipher.ts`), `config jsonb` (non-secret metadata only), unique on `(project_id, type)`. See Appendix A. An earlier draft of this section described a dedicated `adapter_credentials` table with separate `ciphertext`/`iv`/`auth_tag`/`key_version` columns — the already-applied migration (`migrations/001_init.sql`) never had that table; it packs all three secret components into the one `encrypted_credential` column instead, and there is no `key_version` column at all. `src/crypto/credential-cipher.ts`'s header comment documents this as a deliberate fit to the real, already-migrated schema, not an oversight.
+- **Never returned:** the `adapters.config` column stores **only non-secret metadata** — e.g. `{"owner": "acme", "repo": "widgets"}` for GitHub, `{"team_id": "..."}` for Linear. (There is no `projects.adapters` column; an earlier draft of this section described one, but it was never part of the migrated schema — see `docs/DATABASE_SCHEMA.md`'s `projects` table.) As of this build, `kt_get_project_status`, `kt_list_tracks`, and `kt_get_track` don't yet serialize any adapter data into their responses at all — none of the three currently reads the `adapters` table. If/when they do, they must read only `config`, never `encrypted_credential`. The `encrypted_credential` column itself is read **only** by `src/adapters/github/client.ts` and `src/adapters/linear/client.ts`, immediately before making an outbound API call in `kt_sync_to_github`/`kt_sync_to_linear`, and never appears in any tool's output type.
+- **Known gap — no key rotation path shipped in v1:** there is no `key_version` column (see the Storage note above) and no rotation script — no `scripts/rotate-encryption-key.ts`, no corresponding `package.json` script. If `KNOTRACK_ENCRYPTION_KEY` is compromised today, the only recourse is manual: write and run a one-off script that loads every `adapters` row, decrypts `encrypted_credential` with the old key, re-encrypts with a new key and fresh IV, writes the repacked blob back, then updates `KNOTRACK_ENCRYPTION_KEY` and redeploys. Without a `key_version` column there's no way to run old and new keys side-by-side mid-rotation — a real rotation implementation needs to add one first. Tracked as follow-up work in `docs/ROADMAP.md`, to be built when key rotation is actually needed rather than speculatively now.
 
 ---
 
@@ -889,115 +889,13 @@ Behavior: no arguments, no auth, no DB access — always `200 OK`, computed enti
 
 ---
 
-## Appendix A — PostgreSQL Schema (DDL)
+## Appendix A — PostgreSQL Schema
 
-Expressed here as the target schema; in the repository this is built up incrementally across `node-pg-migrate` files under `src/db/migrations/` (plain CommonJS files using the `pgm` builder API — e.g. `pgm.createTable(...)`, `pgm.addConstraint(...)` — which each generate and print the exact SQL they run, keeping migrations both diffable and human-readable without hand-writing raw SQL strings).
+**The authoritative schema is `migrations/001_init.sql`** (plus `002_projects_unique_source_ref.sql` and `003_drift_flags_open_unique.sql`), applied by the custom runner at `scripts/migrate.ts` (§1). It is not reproduced here.
 
-```sql
-create extension if not exists pgcrypto; -- only for gen_random_uuid(); credentials themselves never use pgcrypto (see §5)
+An earlier draft of this Appendix carried a full hand-copied DDL block that, by the time this note was written, had drifted from the schema actually built — across nearly every table, not just the adapter-credential shape already called out in §5. Concretely, the old block: named a fictional `adapter_credentials` table instead of the real `adapters` table (§5); described `projects` with a `source_ref` that's actually nullable and a `projects.adapters` column that was never built; put a `project_id` column directly on `items` that doesn't exist (item→project scoping goes through `track_id` only); gave `tracks` two `last_github_sync_at`/`last_linear_sync_at` columns that don't exist anywhere in the real schema (see the Appendix B note on `SYNC_DRIFT`, below); described `drift_flags` with a six-value `flag_type` plus separate `severity` and `status` columns, where the real table has just a two-value `kind` plus `resolved_at` (see `src/db/queries/drift-flags.ts`'s header comment); and omitted the `api_tokens` table and the `set_updated_at` trigger infrastructure entirely.
 
-create table projects (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  source_type text not null check (source_type in ('github', 'linear', 'local')),
-  source_ref text not null,
-  adapters jsonb not null default '{}'::jsonb,  -- non-secret metadata only, see §5
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (source_type, source_ref)
-);
-
-create table adapter_credentials (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  adapter_type text not null check (adapter_type in ('github', 'linear')),
-  ciphertext bytea not null,
-  iv bytea not null,
-  auth_tag bytea not null,
-  key_version int not null default 1,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (project_id, adapter_type)
-);
-
-create table tracks (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  title text not null,
-  status text not null default 'on_track' check (status in ('on_track', 'pivot_pending', 'blocked', 'done')), -- stored, see §3.5; written only by kt_create_track (§3.6) and kt_record_decision (§3.10)
-  source_doc_ref text,
-  last_github_sync_at timestamptz,
-  last_linear_sync_at timestamptz,
-  created_at timestamptz not null default now()
-);
-create index on tracks (project_id);
-
-create table track_dependencies (
-  track_id uuid not null references tracks(id) on delete cascade,
-  depends_on_track_id uuid not null references tracks(id) on delete cascade,
-  primary key (track_id, depends_on_track_id),
-  check (track_id <> depends_on_track_id)
-);
-
-create table items (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  track_id uuid not null references tracks(id) on delete cascade,
-  title text not null,
-  status text not null default 'pending' check (status in ('pending', 'in_progress', 'done', 'blocked')),
-  sequence_position int not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index on items (track_id);
-create index on items (project_id);
-
-create table item_dependencies (
-  item_id uuid not null references items(id) on delete cascade,
-  depends_on_item_id uuid not null references items(id) on delete cascade,
-  primary key (item_id, depends_on_item_id),
-  check (item_id <> depends_on_item_id)
-);
-
-create table events (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  track_id uuid not null references tracks(id) on delete cascade,
-  event_type text not null default 'session_summary' check (event_type in ('session_summary')),
-  summary_text text not null,
-  files_touched jsonb not null default '[]'::jsonb,
-  items_touched uuid[] not null default '{}',
-  created_at timestamptz not null default now()
-);
-create index on events (track_id, created_at desc);
-create index on events (project_id, created_at desc);
-
-create table decisions (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  track_id uuid not null references tracks(id) on delete cascade,
-  title text not null,
-  rationale text not null,
-  what_changed text not null,
-  created_at timestamptz not null default now()
-);
-create index on decisions (project_id, created_at desc);
-
-create table drift_flags (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  track_id uuid references tracks(id) on delete cascade,
-  item_id uuid references items(id) on delete cascade,
-  flag_type text not null check (flag_type in
-    ('STALE_TRACK', 'DEPENDENCY_GAP', 'SEQUENCE_SKIP', 'UNDOCUMENTED_DECISION', 'ORPHAN_ITEM', 'SYNC_DRIFT')),
-  severity text not null check (severity in ('info', 'warning', 'critical')),
-  detail text not null,
-  status text not null default 'open' check (status in ('open', 'resolved', 'dismissed')),
-  raised_at timestamptz not null default now(),
-  resolved_at timestamptz
-);
-create index on drift_flags (project_id, status, raised_at desc);
-```
+Keeping a second, hand-maintained copy of the DDL in this doc is exactly what let that drift accumulate silently — the same lesson `src/crypto/credential-cipher.ts` and `src/db/queries/adapters.ts` already document for the credential-storage piece specifically. This Appendix now points at the single source of truth instead of duplicating it. For the full table reference — columns, constraints, indexes, and the rationale behind each design choice — see `docs/DATABASE_SCHEMA.md`; for how each table maps to a tool's request/response contract, see this document's §3.
 
 Note on `items.status`: **item status is stored** and is the terminal write target of `kt_update_item_status`, which can set it to any of the four values. `tracks.status` is also stored (§3.5), but with a narrower set of writers: only `kt_create_track` (initial value) and `kt_record_decision` (→ `pivot_pending`) ever write it — there is no tool analogous to `kt_update_item_status` for tracks.
 
@@ -1012,7 +910,9 @@ Note on `items.status`: **item status is stored** and is the terminal write targ
 | `SEQUENCE_SKIP` | `info` | An item with `sequence_position = k` and `status = 'done'` exists while another item in the **same track** with `sequence_position < k` has `status` of `pending` or `blocked` — i.e. work finished out of its intended order. Informational, not necessarily wrong. |
 | `UNDOCUMENTED_DECISION` | `warning` | A `decisions` row exists for a track, and **no** `events` row for that same `track_id` has `created_at` later than the decision's `created_at` — i.e. a decision was logged but no subsequent session summary shows it was acted on. |
 | `ORPHAN_ITEM` | `warning` | An item's `depends_on_item_id` points to an item belonging to a **different** `track_id` than the item itself. (Should be prevented at write time by `kt_create_item`'s same-track restriction — defensive check only, e.g. for imported/migrated data.) |
-| `SYNC_DRIFT` | `warning` | The project has credentials configured for an adapter (a row exists in `adapter_credentials` for `github` and/or `linear`), and the track's `updated_at`-equivalent (most recent item status change or event on that track) is later than its `last_github_sync_at` / `last_linear_sync_at` respectively — i.e. local state has moved since the last successful sync. `last_github_sync_at`/`last_linear_sync_at` are updated only on a successful (`{ok: true}`) `kt_sync_to_github`/`kt_sync_to_linear` call. |
+| `SYNC_DRIFT` | `warning` | The project has credentials configured for an adapter (a row exists in `adapters` for `github` and/or `linear`), and the track's `updated_at`-equivalent (most recent item status change or event on that track) is later than its `last_github_sync_at` / `last_linear_sync_at` respectively — i.e. local state has moved since the last successful sync. `last_github_sync_at`/`last_linear_sync_at` are updated only on a successful (`{ok: true}`) `kt_sync_to_github`/`kt_sync_to_linear` call. |
+
+**`SYNC_DRIFT` is not implementable against the current schema as written.** It depends on `last_github_sync_at`/`last_linear_sync_at` columns that don't exist anywhere in the real schema — not on `tracks`, not on `adapters`, not anywhere (confirmed against `migrations/001_init.sql` and `docs/DATABASE_SCHEMA.md`). This is a genuine gap, not yet a bug, since the only two `kind` values `drift_flags` currently accepts (`out_of_sequence`, `orphan_file_change`) don't include a sync-drift kind either — `SYNC_DRIFT` is entirely unbuilt, tracked for T6. Before it can be built, it needs one of: adding the two `last_*_sync_at` columns (to `tracks`, or to `adapters` scoped by type) via a new migration, or redefining the rule against columns that already exist. That's a schema decision, not something to guess at here — tracked in `docs/ROADMAP.md`'s backlog for a decision before `T6` builds real drift heuristics.
 
 ---
 

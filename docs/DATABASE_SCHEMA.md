@@ -5,8 +5,11 @@ schema created by [`migrations/001_init.sql`](../migrations/001_init.sql) (rever
 [`migrations/001_init.down.sql`](../migrations/001_init.down.sql)).
 
 - Engine: PostgreSQL 13+
-- Migration tool: `node-pg-migrate`, raw-SQL mode (`001_init.sql` / `001_init.down.sql`
-  is one up/down migration pair)
+- Migration tool: a small custom runner (`scripts/migrate.ts`) over plain numbered
+  raw-SQL files (`001_init.sql` / `001_init.down.sql` is one up/down migration pair) —
+  not `node-pg-migrate`; an earlier draft of this doc named that tool, but it was never
+  added as a project dependency. See `docs/TRD.md` §1 and `scripts/migrate.ts`'s header
+  comment for why.
 - Primary keys: `uuid`, generated with `gen_random_uuid()` (from the `pgcrypto`
   extension, enabled by the migration)
 - Timestamps: `timestamptz`, `created_at`/`updated_at` default to `now()`
