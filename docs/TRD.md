@@ -74,10 +74,6 @@ knotrack/
 │   │   └── tools.ts                   # one zod schema per tool; single source of truth, converted to JSON Schema for tools/list
 │   ├── db/
 │   │   ├── pool.ts                    # pg.Pool singleton, sized from KNOTRACK_DB_POOL_MAX
-│   │   ├── migrations/
-│   │   │   ├── 1735689600000_init.js
-│   │   │   ├── 1735689700000_add-sync-timestamps.js
-│   │   │   └── ...                    # node-pg-migrate CommonJS migration files, timestamp-prefixed
 │   │   └── queries/
 │   │       ├── projects.ts
 │   │       ├── tracks.ts
@@ -85,7 +81,7 @@ knotrack/
 │   │       ├── events.ts
 │   │       ├── decisions.ts
 │   │       ├── drift-flags.ts
-│   │       └── adapter-credentials.ts
+│   │       └── adapters.ts
 │   ├── domain/
 │   │   ├── dependency-graph.ts        # topo sort + cycle detection, shared by create-track and create-item
 │   │   ├── drift-detector.ts          # the 6 drift flag rules (see Appendix C)
@@ -105,8 +101,9 @@ knotrack/
 │   ├── unit/                          # domain/ and crypto/ logic, no DB
 │   ├── integration/                   # full tool calls against a real Postgres (docker-compose or testcontainers)
 │   └── fixtures/
+├── migrations/                        # plain numbered <name>.sql / <name>.down.sql pairs, applied by scripts/migrate.ts (§1) — not node-pg-migrate
 ├── scripts/
-│   ├── migrate.ts                     # runs node-pg-migrate programmatically; invoked at deploy time, not in-process
+│   ├── migrate.ts                     # custom runner: applies migrations/*.sql in order, tracks applied ones in schema_migrations; run via `npm run migrate`, not node-pg-migrate
 │   └── generate-token.ts              # prints a new candidate bearer token for KNOTRACK_API_TOKENS
 ├── .env.example
 ├── package.json
@@ -120,6 +117,8 @@ knotrack/
 ├── fly.toml                           # Fly.io deploy config
 └── README.md
 ```
+
+**This tree still has known staleness beyond the migrations fix above, not yet swept:** the real `src/mcp/tools/` has 6 files, not 14 — the 9 unimplemented tools listed individually above (`list-tracks.ts`, `get-track.ts`, `get-next-steps.ts`, `record-decision.ts`, `update-item-status.ts`, `check-drift.ts`, `render-roadmap.ts`, `sync-to-github.ts`, `sync-to-linear.ts`) are actually all registered together in one `stubs.ts` file; `src/db/queries/` has no `decisions.ts` yet (nothing writes to `decisions` until `kt_record_decision` is built); and `src/adapters/` doesn't exist yet at all (no code path uses it until `T5`). Tracked in `docs/ROADMAP.md`'s backlog alongside the other stale-mention sweeps.
 
 ---
 

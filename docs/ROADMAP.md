@@ -200,16 +200,29 @@ describe:
   this doc's backlog section — it was never previously written down in
   one place that six specific tools are behind this Track's own stated
   scope, not merely "not yet built" in the abstract.
-- **`T2.9` (`kt_record_session_summary`)** went the other direction —
-  ahead of its own acceptance criterion. The criterion asks only for an
-  `events` insert "with no drift analysis performed yet"; the shipped
-  version already runs a real scoped out-of-sequence check
+- **`T2.9` (`kt_record_session_summary`)** exceeds its own acceptance
+  criterion, but not by fully doing `T6.1`'s job. The `T2.9` criterion
+  asks only for an `events` insert "with no drift analysis performed
+  yet"; the shipped version already runs a real scoped check
   (`findSequenceSkips`, wired in via `adversarial-review` fixes) and
-  writes/resolves `drift_flags` rows for it — functionality this Track's
-  plan assigns to `T6.1`/`T6.3`, which formally `depends_on` `T5`
-  (not yet started). `T2.11` (`kt_check_drift`) and the two sync stubs
-  (`T2.13`, `T2.14`) do match their stub-only acceptance criteria as
-  written.
+  writes/resolves `drift_flags` rows for it, targeting the DB's
+  `kind='out_of_sequence'` — the same thing TRD Appendix C calls
+  `SEQUENCE_SKIP` (positional: an earlier item in the same track still
+  `pending`/`blocked` while a later one is `done`). That is **not** what
+  `T6.1`'s acceptance criterion literally asks for ("an item marked
+  `done` while an item it `depends_on` via `item_dependencies` is not
+  `done`" — a dependency-graph check, closer to TRD's `DEPENDENCY_GAP`,
+  which is a different rule already enforced synchronously by
+  `kt_update_item_status`'s 409 check, not by this drift check).
+  `T6.1`'s own title ("out-of-sequence detection") and its
+  `kind='out_of_sequence'` target don't actually match its
+  acceptance-criterion wording either — a separate, small inconsistency
+  in `T6.1` itself, worth fixing when `T6` is actually built rather than
+  papered over here. `T6.2` (orphan-file-change) isn't implemented at
+  all, so `T6.3`'s "both heuristics" criterion is unmet regardless of
+  how `T6.1` gets reconciled. `T2.11` (`kt_check_drift`) and the two
+  sync stubs (`T2.13`, `T2.14`) do match their stub-only acceptance
+  criteria as written.
 - Nothing in `T1.6`'s "cross-document consistency... zero open
   discrepancies" gate accounted for this Track-vs-build gap either — it
   checks the docs against each other, not the docs against what actually
@@ -626,9 +639,15 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   diagram label, and a deployment-topology aside), and
   `DATABASE_SCHEMA.md`'s two remaining secondary `node-pg-migrate`
   mentions (both in parenthetical rationale, lower-stakes than the
-  top-of-doc claim already fixed). None are load-bearing the way the
-  fixed ones were, but they're stale and should be swept in one pass
-  rather than piecemeal.
+  top-of-doc claim already fixed). Also found this round but not fixed:
+  TRD §2's Repository Layout tree lists the 9 unimplemented tools as
+  separate files under `src/mcp/tools/` when they're all actually in one
+  `stubs.ts`; lists a `decisions.ts` query file that doesn't exist yet
+  (nothing writes `decisions` until `kt_record_decision` is built); and
+  shows a `src/adapters/` tree that doesn't exist at all yet (`T5` not
+  started). None of these are load-bearing the way the fixed ones were,
+  but they're stale and should be swept in one pass rather than
+  piecemeal.
 - **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
   Appendix B's `SYNC_DRIFT` drift-flag rule depends on
   `last_github_sync_at`/`last_linear_sync_at` columns that don't exist
