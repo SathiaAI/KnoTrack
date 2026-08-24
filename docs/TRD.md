@@ -752,12 +752,12 @@ Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `
 - **Key:** exactly 32 raw bytes, provided as a base64 string in `KNOTRACK_ENCRYPTION_KEY`. Generate with `openssl rand -base64 32`. Decoded once at boot; the server refuses to start if the decoded length is not exactly 32 bytes.
 - **Per-secret encryption:**
   1. Generate a fresh random 12-byte IV: `crypto.randomBytes(12)` (12 bytes / 96 bits is the AES-GCM-recommended nonce size).
-  2. `const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)`
+  2. `const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: 16 })` — `authTagLength` is passed explicitly, not left to the Node default, so the paired decrypt call (below) enforces exactly a 16-byte tag rather than silently accepting a shorter one.
   3. `const ciphertext = Buffer.concat([cipher.update(plaintextUtf8, 'utf8'), cipher.final()])`
   4. `const authTag = cipher.getAuthTag()` (16 bytes)
   5. Pack `iv || authTag || ciphertext` into a single buffer and persist it as `adapters.encrypted_credential` (see Storage, below — the real schema has no separate `key_version` column; see the "Known gap" bullet for the rotation implication of that).
 - **Decryption:**
-  1. `const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)`
+  1. `const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv, { authTagLength: 16 })` — same explicit option as encryption, so `setAuthTag` below enforces the full 16-byte tag rather than accepting a truncated one.
   2. `decipher.setAuthTag(authTag)`
   3. `const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')`
   4. If `decipher.final()` throws (auth tag mismatch — tampered or corrupted ciphertext, or wrong key), the error is caught, logged server-side with no secret material in the log line, and surfaced to the caller as a generic `500 INTERNAL_ERROR` (never leaking which part of the crypto operation failed).

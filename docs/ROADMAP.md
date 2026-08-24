@@ -667,9 +667,16 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   migration adding `adapters.key_version integer NOT NULL DEFAULT 1`,
   and a rotation script that decrypts every `adapters.encrypted_credential`
   with the key matching its row's `key_version`, re-encrypts with the
-  new key, and bumps `key_version`. Not urgent pre-`T5` (no adapter rows
-  exist to rotate yet), but should land before `T5` ships if adapter
-  credentials go live before this is built.
+  new key, and bumps `key_version`. **This is not a pre-`T5` deferral —
+  it's live now.** `kt_register_project` (`T2.2`, already fully shipped,
+  not a stub) already accepts `adapters.github`/`adapters.linear` in its
+  input and calls `encryptCredential` + `upsertAdapter`
+  (`src/mcp/tools/register-project.ts`) today; adapter rows with real
+  encrypted credentials can exist in any deployment right now, well
+  before `T5`'s sync clients are built. A compromised
+  `KNOTRACK_ENCRYPTION_KEY` today has no rotation path for whatever
+  credentials are already stored. Should be prioritized ahead of, not
+  after, further `T5` work.
 - **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
   Appendix B's `SYNC_DRIFT` drift-flag rule depends on
   `last_github_sync_at`/`last_linear_sync_at` columns that don't exist

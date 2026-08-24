@@ -253,9 +253,16 @@ unique; calling again with the same pair updates the existing row, never
 creates a duplicate") at the database level via `INSERT ... ON CONFLICT ...
 DO UPDATE` targeting this index, closing a race where two concurrent
 first-registrations of the same `source_ref` could otherwise both insert.
-Scoped to non-soft-deleted rows, so multiple soft-deleted projects (or
-`source_type='local'` projects, which have `source_ref IS NULL`) never
-collide — Postgres unique indexes treat `NULL` as distinct from `NULL`.
+Scoped to non-soft-deleted rows, so soft-deleted projects never collide
+with an active one reusing the same `(source_type, source_ref)`. The
+`source_ref` column itself is nullable at the DB level (no `NOT NULL`
+constraint in `migrations/001_init.sql`), but `kt_register_project`'s
+input schema requires it as a non-empty string (`z.string().min(1)`,
+`src/schemas/tools.ts`) for every `source_type` including `'local'`
+(a filesystem path, per `docs/TRD.md`'s tool contract) — so in the
+current build no row is ever actually inserted with `source_ref IS
+NULL` through the real registration path; the column's nullability is
+unused headroom, not something `source_type='local'` projects rely on.
 
 **Indexes:** `idx_projects_not_deleted` — partial index on `(id) WHERE deleted_at IS
 NULL`, backing the "active projects" filter every read path applies.
