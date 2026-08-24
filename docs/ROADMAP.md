@@ -452,10 +452,13 @@ partway through this build. Recorded here so the decisions aren't re-litigated l
   deterministic, self-hosted, no-daemon design already settled on
   (see `ARCHITECTURE.md` §6, the anti-orchestrator argument). Rejected.
 
-**Deferred from the v1 adversarial review (see `.adversarial-review/run-20260823-020205/report.md`
-and `suppressions.json` in that run for full technical justification, reproduction notes, and
-expiry dates). All items below were confirmed real by direct code reading during that review —
-none are guesses — but judged disproportionate to fix reactively under review pressure:**
+**Deferred from the v1 adversarial review (see `report.md` and `suppressions.json` under
+`.adversarial-review/run-20260823-020205/` for full technical justification, reproduction notes,
+and expiry dates — that directory is gitignored and local to the machine the review ran on, not
+committed to this repo, so there is no in-repo link to give it; re-run the `adversarial-review`
+skill to regenerate it if needed). All items below were confirmed real by direct code reading
+during that review — except `correctness-3`, explicitly flagged low-confidence and ambiguous, see
+its own entry below — and judged disproportionate to fix reactively under review pressure:**
 - **`T9.x` (new, unscheduled) — DB-operation retry/backoff.** No service
   function retries a transient DB failure (connection reset, serialization
   error) today; a failure just fails fast and rolls back cleanly (the
@@ -472,7 +475,7 @@ none are guesses — but judged disproportionate to fix reactively under review 
   bound in `src/schemas/tools.ts` — an authenticated caller can submit
   arbitrarily large payloads, a storage/memory DoS vector. Needs a handful
   of Zod `.max()` additions; small but not done reactively under review.
-  (Finding `security-3`.)
+  (Finding `security-3`, final rerun.)
 - **`T9.x` (new, unscheduled) — stop echoing raw exception text to
   clients.** `register-project.ts`'s error path puts the raw driver/crypto
   exception message on `details.cause`, which `runTool` serializes verbatim
@@ -512,9 +515,10 @@ none are guesses — but judged disproportionate to fix reactively under review 
   gap, not a correctness one. (Finding `reliability-6`.)
 
 **Accepted risk, not a backlog item — the single shared-token trust model.**
-Findings `security-1` and `security-3` from the *initial* panel pass (distinct
-from the `security-3` above, which is from the final rerun and reused the same
-id) argued that any valid bearer token can read/write any project on the
+Findings `security-1` (initial panel pass) and `security-3` (initial panel
+pass — a *different* finding than the `security-3, final rerun` above; the
+two review passes independently reused the same id number for unrelated
+findings) argued that any valid bearer token can read/write any project on the
 instance, including rotating another project's adapter credentials via
 `kt_register_project`'s upsert. `docs/TRD.md` §4/§7 document this as the
 deliberate v1 trust boundary — one instance, one operator, one trust domain;
