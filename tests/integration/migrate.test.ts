@@ -245,23 +245,28 @@ describe('scripts/migrate.ts applyMigrations', () => {
     try {
       const runPromise = applyMigrations(client, dir);
 
-      // Give the in-flight call time to acquire the lock and reach its
-      // pg_sleep (the lock is acquired as the very first step, before any
-      // other query, so this margin only needs to cover scheduling, not
-      // the full 0.5s sleep).
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      const midRun = await checkerClient.query<{ acquired: boolean }>(
-        'SELECT pg_try_advisory_lock($1) AS acquired',
-        [MIGRATION_ADVISORY_LOCK_KEY],
-      );
-      const midRunAcquired = midRun.rows[0]?.acquired;
-      if (midRunAcquired) {
-        // Unexpected (would mean the lock wasn't actually held) — release
-        // immediately so it doesn't wedge the rest of this test/session.
+      // Poll for the lock being held instead of sleeping a fixed delay —
+      // a fixed delay can elapse before applyMigrations actually acquires
+      // the lock under load, letting pg_try_advisory_lock spuriously
+      // succeed and failing this test even when the runner is correct.
+      // Release the lock after every successful probe so a slow-to-start
+      // run doesn't get falsely flagged, and only proceed once a probe
+      // observes contention (another session actually holds the lock).
+      const deadline = Date.now() + 5_000;
+      let lockObserved = false;
+      while (Date.now() < deadline) {
+        const probe = await checkerClient.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [MIGRATION_ADVISORY_LOCK_KEY],
+        );
+        if (!probe.rows[0]?.acquired) {
+          lockObserved = true;
+          break;
+        }
         await checkerClient.query('SELECT pg_advisory_unlock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
+        await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      expect(midRunAcquired).toBe(false);
+      expect(lockObserved).toBe(true);
 
       const appliedCount = await runPromise;
       expect(appliedCount).toBe(1);
