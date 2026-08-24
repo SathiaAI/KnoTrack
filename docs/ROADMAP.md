@@ -452,13 +452,15 @@ partway through this build. Recorded here so the decisions aren't re-litigated l
   deterministic, self-hosted, no-daemon design already settled on
   (see `ARCHITECTURE.md` §6, the anti-orchestrator argument). Rejected.
 
-**Deferred from the v1 adversarial review (see `report.md` and `suppressions.json` under
-`.adversarial-review/run-20260823-020205/` for full technical justification, reproduction notes,
-and expiry dates — that directory is gitignored and local to the machine the review ran on, not
-committed to this repo, so there is no in-repo link to give it; re-run the `adversarial-review`
-skill to regenerate it if needed). All items below were confirmed real by direct code reading
-during that review — except `correctness-3`, explicitly flagged low-confidence and ambiguous, see
-its own entry below — and judged disproportionate to fix reactively under review pressure:**
+**Deferred from the v1 adversarial review — each item below carries its own justification
+inline, re-verified against current code as of this entry rather than merely restated from the
+review. The review run's `report.md` and `suppressions.json` (under
+`.adversarial-review/run-20260823-020205/`) hold a fuller per-finding evidence trail — exact
+repro steps, severity scoring, panel votes — but that directory is gitignored and local to the
+machine the review ran on, not committed to this repo (re-run the `adversarial-review` skill to
+regenerate it if that extra detail is ever needed); nothing below depends on it being available.
+All items were confirmed real by direct code reading and judged disproportionate to fix
+reactively under review pressure:**
 - **`T9.x` (new, unscheduled) — DB-operation retry/backoff.** No service
   function retries a transient DB failure (connection reset, serialization
   error) today; a failure just fails fast and rolls back cleanly (the
@@ -476,29 +478,9 @@ its own entry below — and judged disproportionate to fix reactively under revi
   arbitrarily large payloads, a storage/memory DoS vector. Needs a handful
   of Zod `.max()` additions; small but not done reactively under review.
   (Finding `security-3`, final rerun.)
-- **`T9.x` (new, unscheduled) — stop echoing raw exception text to
-  clients.** `register-project.ts`'s error path puts the raw driver/crypto
-  exception message on `details.cause`, which `runTool` serializes verbatim
-  into the client-facing error envelope — a low-severity internals leak.
-  Needs the same "log full detail server-side, return a generic message"
-  treatment already used elsewhere. (Finding `security-4`.)
 - **`T9.x` (new, unscheduled) — stop disclosing Node.js version on
   unauthenticated `/info`.** Low-severity recon surface for an attacker
   fingerprinting the server. (Finding `security-5`.)
-- **`T9.x` (new, unscheduled) — close `hasOpenFlagForItem`'s TOCTOU race.**
-  Same check-then-insert race family as `correctness-1` (already fixed for
-  sequence-position auto-assign via `SELECT ... FOR UPDATE`), but for
-  drift-flag dedup: concurrent `record_session_summary` calls can insert
-  duplicate open flags for the same item. Likely closes with the same
-  partial-unique-index pattern used for `correctness-1`'s fix. (Finding
-  `correctness-2`.)
-- **Needs a product decision, not a code fix — `findSequenceSkips`'
-  "complete" definition.** The reviewer flagged (confidence 0.3, genuinely
-  ambiguous against TRD text) that `findSequenceSkips` treats an item with
-  status `in_progress` as "complete" for ordering purposes. Before this is
-  actionable, Paul needs to say whether `in_progress` should count as
-  complete for sequence-skip detection or not — this is a semantics
-  question, not a bug with an obvious fix. (Finding `correctness-3`.)
 - **`T9.x` (new, unscheduled) — five test-coverage gaps, no behavior
   change.** (1) `kt_record_session_summary`: no 404 test for
   `items_touched` referencing a nonexistent item id. (2) `runTool`'s error
@@ -556,11 +538,21 @@ scope decisions, not bugs, per the `clear-decisions` walkthrough:**
   adapters_enabled } }` shape that `get-project-status.ts` doesn't return
   at all — flagged as its own separate drift in commit `208c90b`, not
   re-verified this round); `kt_render_roadmap`, `kt_sync_to_github`, and
-  `kt_sync_to_linear`'s PRD sections (all three are unimplemented v1 stubs
-  — `src/mcp/tools/stubs.ts` — so there's no real code yet to verify the
-  `root_path`/`repo_url`/`adapters_enabled`/`GITHUB_TOKEN`/`LINEAR_API_KEY`
-  prose against); and one stray `root_path`/`repo_url` mention in PRD.md
-  §6's glossary. Needs a pass once `kt_get_project_status` is re-verified
-  against real code and/or the sync tools get real implementations —
-  documenting the sync tools' contract now would be speculative ahead of
-  building them.
+  `kt_sync_to_linear`'s PRD sections §4.12–4.14; and one stray
+  `root_path`/`repo_url` mention in PRD.md §6's glossary. This is not
+  speculative work waiting on real handlers: all three tools are
+  unimplemented stubs, but `src/mcp/tools/stubs.ts` registers each one's
+  real Zod schema from `src/schemas/tools.ts`, and `tools/list` already
+  publishes those schemas to clients today — so the contradiction with
+  the PRD prose is live now, not merely anticipated. Concretely:
+  `kt_render_roadmap`'s schema takes `project_id` + `format`
+  (`'markdown' | 'mermaid'`) with no `output_path` field at all, while
+  PRD §4.12's acceptance criteria are written entirely around a
+  `root_path`/`output_path` file-writing behavior the schema has no way
+  to express; `kt_sync_to_github` and `kt_sync_to_linear` both take only
+  `project_id` + `track_id`, while PRD §4.13/§4.14 gate on
+  `adapters_enabled`, a field the current `source_type`/`source_ref`
+  registration model (PRD §4.1) no longer has. Needs a pass once
+  `kt_get_project_status` is re-verified against real code — but the
+  three stub sections' prose can and should be fixed now, against the
+  schemas already shipping.
