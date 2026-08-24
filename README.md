@@ -59,7 +59,7 @@ are in [`docs/TRD.md`](docs/TRD.md).
 
 ## Quick start
 
-Requirements: Node.js 20+, a Postgres database.
+Requirements: Node.js 20.12+, a Postgres database.
 
 ```bash
 git clone https://github.com/SathiaAI/KnoTrack.git

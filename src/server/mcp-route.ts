@@ -62,6 +62,12 @@ export function registerMcpRoute(app: FastifyInstance, pool: Pool, config: Confi
               },
             }),
           );
+        } else if (!reply.raw.writableEnded) {
+          // Headers (e.g. an in-progress SSE stream) were already sent
+          // before handleRequest rejected, so a fresh JSON error body can't
+          // be written — but the response still has to be terminated, or
+          // the client hangs on an open connection until its own timeout.
+          reply.raw.end();
         }
       }
     },

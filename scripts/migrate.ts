@@ -22,8 +22,24 @@ import { loadDotEnvIfPresent } from '../src/config/load-dotenv.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(__dirname, '..', 'migrations');
 
-const LEADING_BEGIN = /^\s*BEGIN;\s*/i;
+// Allows (and preserves) a run of blank lines and `-- ...` comment lines —
+// e.g. a migration file's descriptive header — before the leading `BEGIN;`.
+// Group 1 captures that leading run so it survives the strip below; only
+// the `BEGIN;` token itself (plus trailing whitespace) is removed.
+const LEADING_BEGIN = /^((?:\s|--[^\r\n]*(?:\r?\n|$))*)BEGIN;\s*/i;
 const TRAILING_COMMIT = /\s*COMMIT;\s*$/i;
+
+// Session-level Postgres advisory lock key for the migration pass as a
+// whole (CodeRabbit re-review: two concurrent `npm run migrate` invocations
+// could both read schema_migrations, both pick the same pending file, and
+// one fails hitting objects the other already created). A single fixed
+// bigint identifies "the KnoTrack migration runner" across every process
+// that calls applyMigrations against the same database, regardless of
+// migrations directory or file contents — it's derived once (FNV-1a 64
+// hash of the literal string "knotrack_migrations", folded into the signed
+// 64-bit range pg_advisory_lock's `bigint` parameter requires) and then
+// hardcoded so no hashing happens at runtime.
+export const MIGRATION_ADVISORY_LOCK_KEY = -2365753259700777648n;
 
 /**
  * Strips a migration file's own leading `BEGIN;` / trailing `COMMIT;` so
@@ -36,15 +52,24 @@ const TRAILING_COMMIT = /\s*COMMIT;\s*$/i;
  * A process death between them leaves the schema changed but no record of
  * it, so the same file re-runs next time and fails on objects that
  * already exist.
+ *
+ * CodeRabbit re-review regression: the original LEADING_BEGIN pattern
+ * only tolerated whitespace before `BEGIN;`, so any migration starting
+ * with a `-- ...` comment header (e.g.
+ * migrations/003_drift_flags_open_unique.sql) failed this function's own
+ * "must start with BEGIN;" check and threw, even though the file is a
+ * perfectly valid BEGIN/COMMIT-wrapped migration. LEADING_BEGIN now allows
+ * and preserves that header instead of requiring it to be absent.
  */
 function stripTransactionWrapper(sql: string, file: string): string {
   if (!LEADING_BEGIN.test(sql) || !TRAILING_COMMIT.test(sql)) {
     throw new Error(
-      `migration ${file} must start with "BEGIN;" and end with "COMMIT;" — the runner strips ` +
-        'those to wrap the DDL and its schema_migrations row in one transaction it controls',
+      `migration ${file} must start with "BEGIN;" (optionally preceded by blank lines and ` +
+        '"-- ..." comment lines) and end with "COMMIT;" — the runner strips those to wrap the ' +
+        'DDL and its schema_migrations row in one transaction it controls',
     );
   }
-  return sql.replace(LEADING_BEGIN, '').replace(TRAILING_COMMIT, '');
+  return sql.replace(LEADING_BEGIN, '$1').replace(TRAILING_COMMIT, '');
 }
 
 /**
@@ -55,51 +80,69 @@ function stripTransactionWrapper(sql: string, file: string): string {
  * directory, independent of process.env/process.exit.
  */
 export async function applyMigrations(client: ClientBase, migrationsDir: string): Promise<number> {
-  await client.query(
-    `CREATE TABLE IF NOT EXISTS schema_migrations (
-       name text PRIMARY KEY,
-       applied_at timestamptz NOT NULL DEFAULT now()
-     )`,
-  );
+  // Session-level advisory lock spanning the entire pass (acquired before
+  // even the pending-migrations read, released only once every migration in
+  // this run has been applied or the pass has failed) so two concurrent
+  // runner invocations against the same database serialize instead of
+  // racing to apply the same file. This is a session lock, not a
+  // transaction-scoped one, so it's acquired/released explicitly rather
+  // than via BEGIN/COMMIT.
+  await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
+  try {
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+         name text PRIMARY KEY,
+         applied_at timestamptz NOT NULL DEFAULT now()
+       )`,
+    );
 
-  const files = readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql') && !f.endsWith('.down.sql'))
-    .sort();
+    const files = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith('.sql') && !f.endsWith('.down.sql'))
+      .sort();
 
-  const appliedResult = await client.query<{ name: string }>('SELECT name FROM schema_migrations');
-  const applied = new Set(appliedResult.rows.map((r) => r.name));
+    const appliedResult = await client.query<{ name: string }>(
+      'SELECT name FROM schema_migrations',
+    );
+    const applied = new Set(appliedResult.rows.map((r) => r.name));
 
-  let appliedCount = 0;
-  for (const file of files) {
-    if (applied.has(file)) {
-      console.log(`skip (already applied): ${file}`);
-      continue;
+    let appliedCount = 0;
+    for (const file of files) {
+      if (applied.has(file)) {
+        console.log(`skip (already applied): ${file}`);
+        continue;
+      }
+      const sql = readFileSync(path.join(migrationsDir, file), 'utf8');
+      const ddl = stripTransactionWrapper(sql, file);
+      console.log(`applying: ${file}`);
+      // Runner-controlled transaction wrapping both the DDL and the
+      // schema_migrations row, so a process death mid-migration can never
+      // leave one committed without the other (see stripTransactionWrapper's
+      // doc comment). The file's own BEGIN/COMMIT (stripped above) still
+      // makes it independently runnable via psql.
+      await client.query('BEGIN');
+      try {
+        // Multi-statement DDL runs as a single simple-query call, which
+        // node-postgres's simple query protocol supports.
+        await client.query(ddl);
+        await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {
+          /* rollback failure is secondary to the original error */
+        });
+        throw error;
+      }
+      appliedCount += 1;
     }
-    const sql = readFileSync(path.join(migrationsDir, file), 'utf8');
-    const ddl = stripTransactionWrapper(sql, file);
-    console.log(`applying: ${file}`);
-    // Runner-controlled transaction wrapping both the DDL and the
-    // schema_migrations row, so a process death mid-migration can never
-    // leave one committed without the other (see stripTransactionWrapper's
-    // doc comment). The file's own BEGIN/COMMIT (stripped above) still
-    // makes it independently runnable via psql.
-    await client.query('BEGIN');
-    try {
-      // Multi-statement DDL runs as a single simple-query call, which
-      // node-postgres's simple query protocol supports.
-      await client.query(ddl);
-      await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => {
-        /* rollback failure is secondary to the original error */
-      });
-      throw error;
-    }
-    appliedCount += 1;
+
+    return appliedCount;
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_ADVISORY_LOCK_KEY]).catch(() => {
+      /* unlock failure is secondary to whatever the try block already threw/returned;
+         the lock is session-scoped, so it's also released automatically when this
+         client's connection eventually closes. */
+    });
   }
-
-  return appliedCount;
 }
 
 async function main(): Promise<void> {

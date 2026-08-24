@@ -14,11 +14,19 @@
 // — `node --env-file=.env` hard-fails (and exits) when the named file is
 // missing, which would break every one of those deploys. The newer
 // `--env-file-if-exists` flag would dodge that, but it needs Node >=22.9,
-// newer than this repo's `engines.node` (`>=20`) and its Dockerfile's
-// `node:20-slim` base actually support. `process.loadEnvFile()` (Node
-// >=20.12) gives the same "load it if present, otherwise carry on"
-// behavior at the JS level instead, so every entrypoint below calls it
-// unconditionally and it's a no-op whenever the file just doesn't exist.
+// newer than this repo's `engines.node` and its Dockerfile's `node:20.20-slim`
+// base actually support. `process.loadEnvFile()` (Node >=20.12) gives the
+// same "load it if present, otherwise carry on" behavior at the JS level
+// instead, so every entrypoint below calls it unconditionally and it's a
+// no-op whenever the file just doesn't exist.
+//
+// CodeRabbit re-review: `engines.node` used to only declare `>=20`, which
+// technically allows 20.0–20.11 — versions with no `loadEnvFile` at all —
+// on which `.env` was silently ignored. `engines.node` now declares
+// `>=20.12` (this function's actual floor) so that gap is a declared
+// version violation rather than a silent no-op; the `typeof !== 'function'`
+// branch below still falls through safely as defense-in-depth for anyone
+// who runs this outside the declared engines range regardless.
 export function loadDotEnvIfPresent(): void {
   const loadEnvFile = (process as unknown as { loadEnvFile?: (path?: string) => void }).loadEnvFile;
   if (typeof loadEnvFile !== 'function') {
