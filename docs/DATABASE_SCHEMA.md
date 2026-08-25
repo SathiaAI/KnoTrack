@@ -279,6 +279,7 @@ Zero or more per project; each adapter connects the project to an external sourc
 | `type` | `text` | `NOT NULL`, `CHECK IN ('github','linear')` | |
 | `encrypted_credential` | `bytea` | `NOT NULL` | Ciphertext of the PAT/API key; encryption/decryption happens in application code, never in SQL. The database never sees a plaintext credential. |
 | `config` | `jsonb` | `NOT NULL DEFAULT '{}'` | e.g. `{"owner": "acme", "repo": "widgets"}` for GitHub, `{"team_id": "..."}` for Linear |
+| `key_version` | `integer` | `NOT NULL DEFAULT 1` | Which generation of `KNOTRACK_ENCRYPTION_KEY` encrypted `encrypted_credential` (added by `migrations/004_adapters_key_version.sql`; see `scripts/rotate-encryption-key.ts`). This row was missing this column when 004 shipped — added here as a doc-sync fix, no schema change. |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 
 **Constraints:** `uq_adapters_project_type` — `UNIQUE (project_id, type)`: at most one
@@ -302,6 +303,8 @@ A track is a coherent unit of work within a project (roughly: an epic/initiative
 | `title` | `text` | `NOT NULL` | |
 | `status` | `text` | `NOT NULL DEFAULT 'on_track'`, `CHECK IN ('on_track','pivot_pending','blocked','done')` | |
 | `source_doc_ref` | `text` | nullable | e.g. a design doc URL or Linear project/issue reference the track was derived from |
+| `last_github_sync_at` | `timestamptz` | nullable | Set only by a successful `kt_sync_to_github` call (still a stub as of `migrations/005_tracks_sync_timestamps.sql` — T6 hasn't started). `NULL` means never synced, not "synced at epoch". Feeds the `SYNC_DRIFT` drift-flag rule (Appendix B). Scoped per track, not on `adapters`, so two tracks in the same project sharing one GitHub adapter don't share one timestamp — see that migration's header comment for the full reasoning (decided by Paul, 2026-08-25). |
+| `last_linear_sync_at` | `timestamptz` | nullable | Same as `last_github_sync_at`, for `kt_sync_to_linear`. |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Auto-maintained by `trg_tracks_set_updated_at` |
 

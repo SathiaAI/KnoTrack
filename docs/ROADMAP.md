@@ -688,29 +688,26 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   `tests/integration/rotate-encryption-key.test.ts` (round-trips a real
   rotation, rejects rotating to the same key, and confirms a wrong
   current key rolls back every row rather than partially rotating).
-- **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
-  Appendix B's `SYNC_DRIFT` drift-flag rule depends on
-  `last_github_sync_at`/`last_linear_sync_at` columns that don't exist
-  anywhere in the real schema — not on `tracks`, not on `adapters`,
-  confirmed against `migrations/001_init.sql`. Not a regression (the
-  `drift_flags.kind` CHECK doesn't even have a sync-drift value yet
-  either — this rule was never built, only specified), but it means
-  `SYNC_DRIFT` can't be implemented as currently documented without a
-  schema change first. This needs Paul's call, not a guess: add the two
-  `last_*_sync_at` columns via a new migration. They must be scoped per
-  **track** (either directly on `tracks`, or on a new join table keyed
-  by both `track_id` and `adapter_id`) — **not** on `adapters` alone.
-  `uq_adapters_project_type` allows only one `adapters` row per
-  `(project_id, type)`, so a project with multiple tracks syncing
-  through the same GitHub/Linear adapter would share a single
-  `last_*_sync_at` value: syncing one track would advance that shared
-  timestamp and make every other unsynced track in the project look
-  current too. Putting the column(s) on `adapters` is not a valid
-  alternative to `tracks` for any project with more than one track using
-  the same adapter type — only "redefine the rule against columns that
-  already exist" remains a real alternative to a `tracks`-scoped column.
-  Blocks real progress on `T6` until decided; not urgent before then
-  since `T6` depends on `T5` (adapters), which hasn't started.
+- **`T9.x` — `SYNC_DRIFT`'s missing schema. Decided and migrated; the drift
+  rule itself is still unbuilt.** Paul chose (2026-08-25) columns directly
+  on `tracks` over a `track_id`+`adapter_id` join table:
+  `last_github_sync_at`/`last_linear_sync_at timestamptz`, nullable,
+  shipped in `migrations/005_tracks_sync_timestamps.sql`. Rationale (full
+  detail in that migration's header comment and `docs/TRD.md` Appendix
+  B): `uq_adapters_project_type` allows only one `adapters` row per
+  `(project_id, type)`, so an `adapters`-scoped column would make every
+  track in a project share one timestamp — syncing track A would
+  silently make track B look up to date too. A `tracks`-scoped column
+  has no such sharing problem. The join-table alternative was considered
+  and rejected: `kt_sync_to_github`/`kt_sync_to_linear` take
+  `(project_id, track_id)`, not an `adapter_id`, and
+  `uq_adapters_project_type` already rules out the "one track needs two
+  adapters of the same type" case a join table would exist to handle —
+  so it would add a join with nothing real to join against. This closes
+  only the schema gap: `SYNC_DRIFT` the drift-flag rule is still unbuilt
+  (`drift_flags.kind`'s CHECK still doesn't have a sync-drift value
+  either), and `kt_sync_to_github`/`kt_sync_to_linear` are still stub
+  registrations — both remain real T5/T6 work, not started.
 - **Process note, not a backlog item — `T1.6`'s sign-off gate has never
   formally closed.** `T1.6`'s acceptance criterion is a cross-document
   consistency pass with "zero open discrepancies," recorded in
@@ -721,3 +718,21 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   actually satisfied — not a new problem to fix here, just worth naming
   plainly rather than treating "T1 done, T2 blocked" as literal status
   (see the reconciliation note under `T2`, above).
+- **Process note, not a backlog item — spec-sync discipline for future
+  commits.** PR #5 shipped new `.max()`/`.max()` Zod bounds in
+  `src/schemas/tools.ts` without updating `docs/TRD.md`'s matching
+  JSON-schema examples in the same commit; Codex caught the drift as a
+  separate review finding, fixed reactively (`e499a5c5`). Separately,
+  `migrations/004_adapters_key_version.sql` (PR #4) added
+  `adapters.key_version` without `docs/DATABASE_SCHEMA.md`'s `adapters`
+  table row ever getting it — caught only during this audit, by hand, not
+  by either review bot. Neither is architecture-significant on its own,
+  but two independent instances of the same failure mode (borrowed from
+  reviewing [automazeio/ccpm's "No Vibe Coding" principle](https://github.com/automazeio/ccpm#core-principle-no-vibe-coding),
+  which names this exact drift as the thing spec-first discipline is
+  meant to prevent) is a pattern worth naming: **a commit that changes a
+  tool's input/output shape, an endpoint's response shape, or a table's
+  columns should update every doc that documents that shape in the same
+  commit** — `docs/TRD.md` §3's JSON-schema blocks and `docs/DATABASE_SCHEMA.md`'s
+  column tables, specifically — not leave it for review to catch after
+  the fact.
