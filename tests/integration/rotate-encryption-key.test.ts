@@ -9,7 +9,7 @@ const pool = getTestPool();
 const OLD_KEY = Buffer.alloc(32, 1);
 const NEW_KEY = Buffer.alloc(32, 2);
 
-async function seedAdapter(sourceRef: string, plaintext: string) {
+async function seedAdapter(sourceRef: string, plaintext: string, key: Buffer = OLD_KEY) {
   const project = await upsertProjectBySourceRef(pool, {
     name: `Project ${sourceRef}`,
     sourceType: 'local',
@@ -18,7 +18,7 @@ async function seedAdapter(sourceRef: string, plaintext: string) {
   await upsertAdapter(pool, {
     projectId: project.id,
     type: 'github',
-    encryptedCredential: encryptCredential(plaintext, OLD_KEY),
+    encryptedCredential: encryptCredential(plaintext, key),
     config: {},
   });
   return project.id;
@@ -59,6 +59,48 @@ describe('rotate-encryption-key: rotateEncryptionKey', () => {
     );
     const rows = await listAllAdapters(pool);
     expect(rows[0]?.key_version).toBe(1);
+  });
+
+  it('positive: a row inserted between two rotations ends up on the same key_version as rows rotated both times', async () => {
+    // CodeRabbit finding on PR #4: upsertAdapter used to leave key_version
+    // to the column's DEFAULT 1, so a row created after a rotation (when
+    // every existing row was already bumped to a later generation) would
+    // silently disagree with the rest of the table about which key
+    // generation it's on — even though it's actually encrypted with the
+    // same (current) key as everything else.
+    await seedAdapter('/tmp/repo-f', 'secret-f');
+
+    // Rotation 1: OLD_KEY -> NEW_KEY. Every existing row (just repo-f) goes
+    // to key_version 2.
+    await rotateEncryptionKey(pool, OLD_KEY, NEW_KEY);
+
+    // A new adapter registered *after* rotation 1, encrypted with the now-
+    // current key (NEW_KEY) — simulating kt_register_project running
+    // against a server that's already been redeployed with the new key.
+    await seedAdapter('/tmp/repo-g', 'secret-g', NEW_KEY);
+
+    const afterFirstRegistration = await listAllAdapters(pool);
+    expect(afterFirstRegistration).toHaveLength(2);
+    // Both rows must agree on which generation they're on *before* the
+    // next rotation touches either of them.
+    const versions = new Set(afterFirstRegistration.map((r) => r.key_version));
+    expect(versions.size).toBe(1);
+    expect([...versions][0]).toBe(2);
+
+    // Rotation 2: NEW_KEY -> a third key. Both rows are actually on
+    // NEW_KEY at this point, so both must decrypt cleanly and both must
+    // land on the *same* next key_version — not one row jumping to 3
+    // while the other silently stays behind, or vice versa.
+    const THIRD_KEY = Buffer.alloc(32, 3);
+    const rotated = await rotateEncryptionKey(pool, NEW_KEY, THIRD_KEY);
+    expect(rotated).toBe(2);
+
+    const afterSecondRotation = await listAllAdapters(pool);
+    expect(afterSecondRotation).toHaveLength(2);
+    for (const row of afterSecondRotation) {
+      expect(row.key_version).toBe(3);
+      expect(decryptCredential(row.encrypted_credential, THIRD_KEY)).toMatch(/^secret-[fg]$/);
+    }
   });
 
   it('negative: a wrong current key rolls back every row, not just the one that failed', async () => {

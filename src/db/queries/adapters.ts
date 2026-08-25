@@ -16,12 +16,29 @@ export async function upsertAdapter(
     config: Record<string, unknown>;
   },
 ): Promise<void> {
+  // key_version: CodeRabbit finding on PR #4 — leaving this to the
+  // column's own DEFAULT 1 only works for the very first adapter ever
+  // inserted. Once a rotation has bumped every existing row to
+  // generation N, a brand-new row (a new adapter, or a re-registration
+  // that DO UPDATEs an existing one) is encrypted with whatever key is
+  // *currently* configured — which, by the rotation runbook in TRD §5,
+  // is always generation N by the time the server is back up and
+  // accepting registrations again. Stamping it with the column default
+  // of 1 instead of N would silently desynchronize it from every other
+  // row, so the next rotation would bump it to N+1 while the untouched
+  // rows go to N+2 — both now on the same actual key, but disagreeing
+  // about which "generation" that is. Deriving key_version from
+  // MAX(key_version) across the table (falling back to 1 when the table
+  // is empty) keeps every row's stamp in sync with whatever the last
+  // rotation left behind, with no separate generation-counter table to
+  // maintain.
   await db.query(
-    `INSERT INTO adapters (project_id, type, encrypted_credential, config)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO adapters (project_id, type, encrypted_credential, config, key_version)
+     VALUES ($1, $2, $3, $4, COALESCE((SELECT MAX(key_version) FROM adapters), 1))
      ON CONFLICT (project_id, type)
      DO UPDATE SET encrypted_credential = EXCLUDED.encrypted_credential,
-                   config = EXCLUDED.config`,
+                   config = EXCLUDED.config,
+                   key_version = EXCLUDED.key_version`,
     [input.projectId, input.type, input.encryptedCredential, JSON.stringify(input.config)],
   );
 }
