@@ -29,6 +29,30 @@
 -- SYNC_DRIFT drift-flag rule itself (both still out of scope — T5/T6
 -- haven't started), so building that logic now would be speculative
 -- ahead of the tools that populate and consume these columns.
+--
+-- Two design constraints for whoever builds T5/T6 (Codex review findings
+-- on this migration, PR #6 — recorded here since there's no code yet to
+-- attach them to):
+--   1. Destination-change invalidation. kt_register_project's upsert path
+--      (upsertAdapter, src/db/queries/adapters.ts) can change an existing
+--      adapter's `config` (github `repo`, linear `team_id`) in place. A
+--      track's last_*_sync_at was earned against whatever destination was
+--      configured *at that sync time* — if the destination changes
+--      afterward, the timestamp no longer means "in sync with the
+--      project's current destination" and must be reset (e.g. NULLed) as
+--      part of that same upsert, not left standing.
+--   2. Snapshot-boundary semantics. last_*_sync_at must record the
+--      watermark of the state that was actually read and exported to the
+--      remote — captured *before* that read — not simply "wall-clock time
+--      the sync call returned success". Recording completion time instead
+--      can hide a local change that landed between the read and the
+--      write: read local state at T1, a concurrent session records an
+--      event at T2, the sync call finishes and stamps T3 — a later
+--      "latest local change > last_sync_at" check then wrongly reads as
+--      caught up. Whoever implements kt_sync_to_github/kt_sync_to_linear
+--      needs to capture the pre-read watermark and only write it on
+--      success, or otherwise serialize local writes against an in-flight
+--      sync.
 
 BEGIN;
 

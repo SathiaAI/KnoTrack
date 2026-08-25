@@ -897,7 +897,7 @@ depending on it.
 
 **The authoritative schema is `migrations/001_init.sql`** (plus `002_projects_unique_source_ref.sql`, `003_drift_flags_open_unique.sql`, `004_adapters_key_version.sql`, and `005_tracks_sync_timestamps.sql`), applied by the custom runner at `scripts/migrate.ts` (§1). It is not reproduced here.
 
-An earlier draft of this Appendix carried a full hand-copied DDL block that, by the time this note was written, had drifted from the schema actually built — across nearly every table, not just the adapter-credential shape already called out in §5. Concretely, the old block: named a fictional `adapter_credentials` table instead of the real `adapters` table (§5); described `projects` with a `source_ref` that's actually nullable and a `projects.adapters` column that was never built; put a `project_id` column directly on `items` that doesn't exist (item→project scoping goes through `track_id` only); gave `tracks` two `last_github_sync_at`/`last_linear_sync_at` columns that don't exist anywhere in the real schema (see the Appendix B note on `SYNC_DRIFT`, below); described `drift_flags` with a six-value `flag_type` plus separate `severity` and `status` columns, where the real table has just a two-value `kind` plus `resolved_at` (see `src/db/queries/drift-flags.ts`'s header comment); and omitted the `api_tokens` table and the `set_updated_at` trigger infrastructure entirely.
+An earlier draft of this Appendix carried a full hand-copied DDL block that, by the time this note was written, had drifted from the schema actually built — across nearly every table, not just the adapter-credential shape already called out in §5. Concretely, the old block: named a fictional `adapter_credentials` table instead of the real `adapters` table (§5); described `projects` with a `source_ref` that's actually nullable and a `projects.adapters` column that was never built; put a `project_id` column directly on `items` that doesn't exist (item→project scoping goes through `track_id` only); gave `tracks` two `last_github_sync_at`/`last_linear_sync_at` columns that, at the time this note was written, didn't exist anywhere in the real schema — that gap is now closed by `migrations/005_tracks_sync_timestamps.sql` (see the Appendix B note on `SYNC_DRIFT`, below); described `drift_flags` with a six-value `flag_type` plus separate `severity` and `status` columns, where the real table has just a two-value `kind` plus `resolved_at` (see `src/db/queries/drift-flags.ts`'s header comment); and omitted the `api_tokens` table and the `set_updated_at` trigger infrastructure entirely.
 
 Keeping a second, hand-maintained copy of the DDL in this doc is exactly what let that drift accumulate silently — the same lesson `src/crypto/credential-cipher.ts` and `src/db/queries/adapters.ts` already document for the credential-storage piece specifically. This Appendix now points at the single source of truth instead of duplicating it. For the full table reference — columns, constraints, indexes, and the rationale behind each design choice — see `docs/DATABASE_SCHEMA.md`; for how each table maps to a tool's request/response contract, see this document's §3.
 
@@ -906,6 +906,19 @@ Note on `items.status`: **item status is stored** and is the terminal write targ
 ---
 
 ## Appendix B — Drift Flag Catalog (`kt_check_drift`, `kt_record_session_summary`'s scoped re-check)
+
+**This table is the spec-level catalog, not a literal column list.** The real `drift_flags`
+table has a `kind` column (CHECK-restricted to `'out_of_sequence'` | `'orphan_file_change'`)
+and `resolved_at`, not a `flag_type`/`severity`/`status` set of columns — `src/db/queries/
+drift-flags.ts`'s header comment documents the exact mapping this build uses (`flag_type` in
+tool output = `kind` upper-cased/renamed per a fixed table; `severity` is derived from `kind`,
+not stored; `status` = `'open'` when `resolved_at IS NULL`, else `'resolved'`). Of the six
+`flag_type`s below, only `SEQUENCE_SKIP` (`kind = 'out_of_sequence'`) is ever actually raised
+in this build, by `kt_record_session_summary`'s scoped re-check — `kt_check_drift` itself
+(which would run the full catalog) is a stub (`src/mcp/tools/check-drift.ts`). The DB's other
+allowed kind, `orphan_file_change`, maps to a flag_type (`ORPHAN_FILE_CHANGE`) reserved for a
+future `kt_check_drift` rule and is **not** the same thing as `ORPHAN_ITEM` below despite the
+similar name — it's never raised anywhere in this build.
 
 | `flag_type` | `severity` | Trigger condition |
 |---|---|---|
