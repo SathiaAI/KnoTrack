@@ -76,10 +76,15 @@ export function registerHealthRoutes(
   });
 
   app.get('/info', async (_request, reply) => {
+    // adversarial-review security-5 (docs/ROADMAP.md T9.x): /info is
+    // unauthenticated by design (docs/TRD.md §8), so anything it discloses
+    // is available to an unauthenticated caller fingerprinting the server.
+    // The Node.js runtime version was pure recon value (helps target
+    // known Node CVEs) with no legitimate client use — removed rather than
+    // gated, since no documented client behavior depends on it.
     return reply.code(200).send({
       server_version: SERVER_VERSION,
       mcp_protocol_version: MCP_PROTOCOL_VERSION,
-      node_version: process.version,
       supported_adapters: SUPPORTED_ADAPTERS,
       instance_started_at: instanceStartedAt.toISOString(),
     });

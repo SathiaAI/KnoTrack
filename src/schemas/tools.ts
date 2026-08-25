@@ -6,17 +6,23 @@ import { z } from 'zod';
 
 const uuid = () => z.string().uuid();
 
+// adversarial-review security-3 (final rerun, docs/ROADMAP.md T9.x): these
+// credential/config strings had no upper bound, so an authenticated caller
+// could submit an arbitrarily large payload — a storage/memory DoS vector,
+// not just a correctness gap. Bounds are generous relative to real token
+// shapes (GitHub PATs top out well under 256 chars; Linear API keys and
+// team ids are short identifiers) while still being a real ceiling.
 const githubAdapterInput = z
   .object({
-    personal_access_token: z.string().min(1),
-    repo: z.string().min(1).optional(),
+    personal_access_token: z.string().min(1).max(512),
+    repo: z.string().min(1).max(200).optional(),
   })
   .strict();
 
 const linearAdapterInput = z
   .object({
-    api_key: z.string().min(1),
-    team_id: z.string().min(1),
+    api_key: z.string().min(1).max(512),
+    team_id: z.string().min(1).max(200),
   })
   .strict();
 
@@ -85,7 +91,12 @@ export const recordSessionSummaryInputSchema = z
     project_id: uuid(),
     track_id: uuid(),
     summary_text: z.string().min(1).max(10000),
-    files_touched: z.array(z.string().min(1).max(1000)).default([]),
+    // adversarial-review security-3 (final rerun, docs/ROADMAP.md T9.x): the
+    // per-string .max(1000) bounded each file path's length, but the array
+    // itself had no .max() — an authenticated caller could still submit an
+    // unbounded number of entries. 500 comfortably covers a real session's
+    // touched-file count while capping worst-case payload size.
+    files_touched: z.array(z.string().min(1).max(1000)).max(500).default([]),
     items_touched: z.array(uuid()).default([]),
   })
   .strict();

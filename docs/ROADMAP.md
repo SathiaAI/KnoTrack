@@ -474,20 +474,23 @@ Reviewed two comparable tools ([automazeio/ccpm](https://github.com/automazeio/c
 and the [mcpmarket.com project-management skill](https://mcpmarket.com/tools/skills/project-management-3))
 partway through this build. Recorded here so the decisions aren't re-litigated later.
 
-**Borrowed (backlog, not v1-blocking):**
-- **`T9.x` (new, unscheduled) — thin CLI wrapper.** CCPM runs deterministic
-  read operations (status, standup) as plain scripts with zero LLM token
-  cost. `kt_get_project_status` is already a deterministic query under the
-  hood; exposing the same service-layer call as a local CLI command (no
-  MCP round-trip, no agent required) is a cheap, additive win for humans
-  and CI. Not needed for v1; candidate for right after `T7`.
-- **`T9.x` (new, unscheduled) — companion `SKILL.md`.** CCPM ships an
-  "Agent Skills"-format file alongside its GitHub-Issues backbone, which
-  reportedly gets picked up by Factory and Cursor in addition to Claude.
-  Pairing our existing `AGENTS.md` breadcrumb with a `SKILL.md` is cheap
-  and purely additive — does not replace the MCP-first strategy, just
-  gives a second, lower-effort discovery path for harnesses that support
-  the convention but haven't wired up our MCP server yet.
+**Borrowed:**
+- **`T9.x` — thin CLI wrapper. Done, no longer a backlog item.**
+  `scripts/get-project-status-cli.ts` (`npm run get-project-status --
+  <project_id>`) calls `getProjectStatusService` directly — no MCP
+  transport, no server process, no agent involved — and prints the same
+  JSON `kt_get_project_status` returns. Compiled to
+  `dist/scripts/get-project-status-cli.js` for the same Docker-runtime
+  invocation form `scripts/migrate.ts`/`scripts/rotate-encryption-key.ts`
+  already document (the runtime image strips `tsx` and doesn't copy
+  `scripts/*.ts`).
+- **`T9.x` — companion `SKILL.md`. Done, no longer a backlog item.**
+  `SKILL.md` (repo root) documents the CLI wrapper above as a second,
+  lower-effort discovery path for harnesses that pick up the `SKILL.md`
+  convention but haven't wired up the MCP server directly. Note: this repo
+  does not actually have an `AGENTS.md` file today — the line above about
+  "pairing our existing `AGENTS.md` breadcrumb" was aspirational, not
+  accurate at the time it was written; `SKILL.md` stands on its own.
 - **Backlog idea, not scheduled — per-Item long-form notes.** The
   mcpmarket skill keeps a `spec.md`/`plan.md`/`findings.md` per tracked
   issue. KnoTrack's `items` table has no equivalent free-text field today
@@ -527,26 +530,34 @@ reactively under review pressure:**
   reactively inside one review; tracked here instead of built ad hoc.
   Suppression expires 2026-11-23 — revisit before then. (Findings
   `reliability-2`, `reliability-5`.)
-- **`T9.x` (new, unscheduled) — bound `files_touched` and adapter-secret
-  input sizes.** `kt_record_session_summary`'s `files_touched` array and
-  `kt_register_project`'s `adapters.*` credential strings have no `.max()`
-  bound in `src/schemas/tools.ts` — an authenticated caller can submit
-  arbitrarily large payloads, a storage/memory DoS vector. Needs a handful
-  of Zod `.max()` additions; small but not done reactively under review.
-  (Finding `security-3`, final rerun.)
-- **`T9.x` (new, unscheduled) — stop disclosing Node.js version on
-  unauthenticated `/info`.** Low-severity recon surface for an attacker
-  fingerprinting the server. (Finding `security-5`.)
-- **`T9.x` (new, unscheduled) — five test-coverage gaps, no behavior
-  change.** (1) `kt_record_session_summary`: no 404 test for
-  `items_touched` referencing a nonexistent item id. (2) `runTool`'s error
-  envelope shape and generic-error redaction has no direct unit test. (3)
-  `kt_register_project`'s Linear-adapter credential encryption path is
-  untested (only GitHub's is). (4) `kt_get_project_status`: no test
-  verifies `drift_flags` field mapping when open flags actually exist. (5)
-  No test verifies a soft-deleted project (`deleted_at` set) is rejected by
-  every service function, not just some. All confirmed real gaps, all
-  test-only additions. (Findings `test_quality-1` through `test_quality-5`.)
+- **`T9.x` — bound `files_touched` and adapter-secret input sizes. Done, no
+  longer a backlog item.** `src/schemas/tools.ts`: `files_touched` now caps
+  at 500 array entries (each entry was already capped at 1000 chars);
+  `personal_access_token`/`api_key` cap at 512 chars, `repo`/`team_id` cap
+  at 200 — generous relative to real token/identifier shapes, but a real
+  ceiling against an authenticated caller submitting an arbitrarily large
+  payload. (Finding `security-3`, final rerun.)
+- **`T9.x` — stop disclosing Node.js version on unauthenticated `/info`.
+  Done, no longer a backlog item.** `src/server/health-route.ts`'s `/info`
+  handler no longer includes `node_version`; `docs/TRD.md` §8's example
+  response and field list updated to match. (Finding `security-5`.)
+- **`T9.x` — five test-coverage gaps. Done, no longer a backlog item.** All
+  five added, no behavior change: (1) `tests/integration/record-session-summary.test.ts`
+  — 404 when an `items_touched` id doesn't exist as an item at all. (2)
+  `tests/unit/tool-helpers.test.ts` (new) — `runTool`'s success envelope,
+  `KtError` envelope, and generic-error redaction/logging, exercised
+  directly. (3) `tests/integration/register-project.test.ts` — Linear
+  adapter credential encryption-at-rest, mirroring the existing GitHub
+  test. (4) `tests/integration/get-project-status.test.ts` — `drift_flags`
+  field mapping against an actually-open flag (previously only asserted
+  the empty-array case). (5) `tests/integration/soft-deleted-project.test.ts`
+  (new) — a project with `deleted_at` set is rejected (404) by every real
+  service function that takes a `project_id`
+  (`kt_get_project_status`/`kt_create_track`/`kt_create_item`/
+  `kt_record_session_summary`; `kt_register_project` doesn't apply — see
+  that file's header comment — and `kt_update_item_status`/
+  `kt_record_decision` are still stubs). (Findings `test_quality-1`
+  through `test_quality-5`.)
 - **`T9.x` (new, unscheduled) — structured logging for drift-scan
   outcomes.** No log line records drift-scan duration, item count scanned,
   or flags raised per `kt_record_session_summary` call — an observability

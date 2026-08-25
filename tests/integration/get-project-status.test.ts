@@ -73,6 +73,68 @@ describe('kt_get_project_status', () => {
     expect(status.drift_flags).toEqual([]);
   });
 
+  // adversarial-review test_quality-4 (docs/ROADMAP.md T9.x): the positive
+  // roll-up test above only ever asserted `drift_flags: []` — no test
+  // verified the field mapping (flag_id/flag_type/severity/track_id/
+  // item_id/detail/status/raised_at) when an open flag actually exists.
+  it('positive: drift_flags reflects an actually-open flag with every field mapped', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'P',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'Track with drift',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    await createItemService(pool, config, {
+      project_id,
+      track_id,
+      title: 'Earlier, still pending',
+      sequence_position: 1,
+      depends_on: [],
+    });
+    const later = await createItemService(pool, config, {
+      project_id,
+      track_id,
+      title: 'Later, finished early',
+      sequence_position: 2,
+      depends_on: [],
+    });
+    await pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [later.item_id]);
+
+    const summary = await recordSessionSummaryService(pool, config, {
+      project_id,
+      track_id,
+      summary_text: 'Finished the later item out of sequence.',
+      files_touched: [],
+      items_touched: [],
+    });
+    expect(summary.drift_flags_raised).toHaveLength(1);
+
+    const status = await getProjectStatusService(pool, config, { project_id });
+
+    expect(status.drift_flags).toHaveLength(1);
+    const flag = status.drift_flags[0];
+    expect(flag).toMatchObject({
+      flag_type: 'SEQUENCE_SKIP',
+      severity: expect.any(String),
+      track_id,
+      item_id: later.item_id,
+      status: 'open',
+    });
+    expect(flag?.flag_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(typeof flag?.detail).toBe('string');
+    expect(flag?.detail.length).toBeGreaterThan(0);
+    // raised_at must be an ISO-8601 string (per getProjectStatusService's
+    // `.toISOString()` mapping), not a raw Date/driver value.
+    expect(() => new Date(flag?.raised_at ?? '')).not.toThrow();
+    expect(new Date(flag?.raised_at ?? '').toISOString()).toBe(flag?.raised_at);
+  });
+
   it('negative: 404 when project does not exist', async () => {
     await expect(
       getProjectStatusService(pool, config, { project_id: UNKNOWN_UUID }),

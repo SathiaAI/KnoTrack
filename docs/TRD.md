@@ -880,11 +880,15 @@ Behavior: no arguments, no auth, no DB access — always `200 OK`, computed enti
 {
   "server_version": "0.1.0",
   "mcp_protocol_version": "2026-07-28",
-  "node_version": "v20.17.0",
   "supported_adapters": ["github", "linear"],
   "instance_started_at": "2026-08-23T09:00:00.000Z"
 }
 ```
+
+`/info` deliberately does not disclose the Node.js runtime version (adversarial-review
+security-5, docs/ROADMAP.md T9.x): it was pure recon value for an unauthenticated caller
+fingerprinting the server ahead of a targeted Node CVE, with no documented client behavior
+depending on it.
 
 ---
 
