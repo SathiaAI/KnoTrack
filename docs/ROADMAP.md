@@ -181,6 +181,62 @@ composed entirely from tracks/items already implemented by `T2.3`–`T2.8`,
 so it is built and unit-tested as part of `T2.15`'s hardening pass rather
 than getting its own numbered item.
 
+**Status reconciliation (added retroactively — this Track's items above
+describe the plan, not yet what shipped).** As of the current build, only
+5 of the 14 tools have the full implementation this Track calls for:
+`kt_register_project` (`T2.2`), `kt_create_track` (`T2.3`),
+`kt_create_item` (`T2.4`), `kt_get_project_status` (`T2.7`), and
+`kt_record_session_summary` (`T2.9` — see below, it actually exceeds its
+own acceptance criterion). The other 9 are registered as stubs
+(`src/mcp/tools/stubs.ts`: correct request/response shape, no real
+logic, no external calls) rather than the tools this Track's items
+describe:
+- **`T2.5` (`kt_list_tracks`), `T2.6` (`kt_get_track`), `T2.8`
+  (`kt_update_item_status`), `T2.10` (`kt_record_decision`), `T2.12`
+  (`kt_render_roadmap`), and the `kt_get_next_steps` read query above** —
+  this Track's acceptance criteria call for all six to be **fully**
+  implemented (not stubs). None currently is. This is the gap behind the
+  "old model path" flag and the PR #1 CodeRabbit deferrals recorded in
+  this doc's backlog section — it was never previously written down in
+  one place that six specific tools are behind this Track's own stated
+  scope, not merely "not yet built" in the abstract.
+- **`T2.9` (`kt_record_session_summary`)** exceeds its own acceptance
+  criterion, but not by fully doing `T6.1`'s job. The `T2.9` criterion
+  asks only for an `events` insert "with no drift analysis performed
+  yet"; the shipped version already runs a real scoped check
+  (`findSequenceSkips`, wired in via `adversarial-review` fixes) and
+  writes/resolves `drift_flags` rows for it, targeting the DB's
+  `kind='out_of_sequence'` — the same thing TRD Appendix C calls
+  `SEQUENCE_SKIP` (positional: an earlier item in the same track still
+  `pending`/`blocked` while a later one is `done`). That is **not** what
+  `T6.1`'s acceptance criterion literally asks for ("an item marked
+  `done` while an item it `depends_on` via `item_dependencies` is not
+  `done`" — a dependency-graph check, closer to TRD's `DEPENDENCY_GAP`,
+  which is a different rule already enforced synchronously by
+  `kt_update_item_status`'s 409 check, not by this drift check).
+  `T6.1`'s own title ("out-of-sequence detection") and its
+  `kind='out_of_sequence'` target don't actually match its
+  acceptance-criterion wording either — a separate, small inconsistency
+  in `T6.1` itself, worth fixing when `T6` is actually built rather than
+  papered over here. `T6.2` (orphan-file-change) isn't implemented at
+  all, so `T6.3`'s "both heuristics" criterion is unmet regardless of
+  how `T6.1` gets reconciled. `T2.11` (`kt_check_drift`) and the two
+  sync stubs (`T2.13`, `T2.14`) do **not** actually match their
+  stub-only acceptance criteria either, on closer check:
+  `registerStubTools` routes every one of the 9 stub tools through the
+  same generic `notImplementedResult` (`src/mcp/tool-helpers.ts`), which
+  always returns a uniform `500 INTERNAL_ERROR` — not `T2.11`'s specific
+  "empty result with a `no heuristics configured` note", and not
+  `T2.13`/`T2.14`'s specific "adapter not configured" result after
+  validating the item exists. The generic-500 stub shape is the same for
+  all 9 unimplemented tools; none of the three has the bespoke
+  stub-response behavior its own T2 line calls for.
+- Nothing in `T1.6`'s "cross-document consistency... zero open
+  discrepancies" gate accounted for this Track-vs-build gap either — it
+  checks the docs against each other, not the docs against what actually
+  got built. Worth knowing before treating "T1 done, T2 blocked" as
+  literal build status.
+
 ---
 
 ## T3 — Deploy + auth (Railway reference deployment)
@@ -556,3 +612,101 @@ scope decisions, not bugs, per the `clear-decisions` walkthrough:**
   `kt_get_project_status` is re-verified against real code — but the
   three stub sections' prose can and should be fixed now, against the
   schemas already shipping.
+
+**Deferred from a documentation-completeness audit (2026-08-24), prompted
+by "do we have clarity on the gaps and how it maps to the roadmap":**
+- **Fixed in this same round, not a backlog item — TRD.md's Appendix A
+  and §5 described a schema that was never built.** TRD Appendix A
+  carried a full hand-copied DDL block that had drifted from the real
+  schema (`migrations/001_init.sql`) across nearly every table: a
+  fictional `adapter_credentials` table instead of the real `adapters`
+  table; a `projects.adapters` column and a non-nullable `source_ref`
+  that don't exist; a `project_id` column directly on `items` that
+  doesn't exist; a `drift_flags.flag_type`/`severity`/`status` shape
+  where the real table has `kind`/`detail`/`resolved_at`; and no
+  `api_tokens` table at all. §5's credential-storage description had the
+  same `adapter_credentials`/`key_version` drift, independently
+  discovered and partly self-documented already in
+  `src/crypto/credential-cipher.ts`'s header comment. Fixed by pointing
+  Appendix A at the real migration files instead of duplicating them
+  (the duplication is what let this drift accumulate unnoticed), and
+  correcting §5's storage/never-returned/known-gap bullets to match
+  `src/db/queries/adapters.ts`. Also fixed: §1's Tech Stack table still
+  named `node-pg-migrate` as the migration tool; the shipped build uses
+  a hand-written raw-SQL + custom-runner approach instead
+  (`scripts/migrate.ts`), and `node-pg-migrate` isn't even a project
+  dependency. Also fixed `DATABASE_SCHEMA.md`'s top-of-doc "Migration
+  tool" line, which had the same wrong claim and would have undermined
+  this Appendix pointing readers there as the source of truth.
+- **`T9.x` (new, unscheduled) — sweep remaining stale `node-pg-migrate`/
+  `adapter_credentials` mentions.** This audit fixed the load-bearing
+  instances (TRD §1/§5/Appendix A/B, `DATABASE_SCHEMA.md`'s top-of-doc
+  migration-tool line) but didn't chase every mention repo-wide:
+  `PRD.md` §5.3 (two `adapter_credentials` mentions), `ARCHITECTURE.md`
+  (three `node-pg-migrate` mentions — tech-stack summary, component
+  diagram label, and a deployment-topology aside), and
+  `DATABASE_SCHEMA.md`'s two remaining secondary `node-pg-migrate`
+  mentions (both in parenthetical rationale, lower-stakes than the
+  top-of-doc claim already fixed). Also found this round but not fixed:
+  TRD §2's Repository Layout tree lists the 9 unimplemented tools as
+  separate files under `src/mcp/tools/` when they're all actually in one
+  `stubs.ts`; lists a `decisions.ts` query file that doesn't exist yet
+  (nothing writes `decisions` until `kt_record_decision` is built); and
+  shows a `src/adapters/` tree that doesn't exist at all yet (`T5` not
+  started). None of these are load-bearing the way the fixed ones were,
+  but they're stale and should be swept in one pass rather than
+  piecemeal.
+- **`T9.x` (new, unscheduled) — encryption-key rotation.** TRD §5's
+  "Known gap" bullet says compromising `KNOTRACK_ENCRYPTION_KEY` today
+  has no in-band recovery path: there is no `key_version` column on
+  `adapters` (so old and new keys can't be run side-by-side mid-rotation)
+  and no `scripts/rotate-encryption-key.ts` (or corresponding
+  `package.json` script) to do the re-encrypt sweep. This item is what
+  that TRD bullet points to as "tracked as follow-up work" — previously
+  that claim wasn't backed by an actual backlog entry. Needs: a new
+  migration adding `adapters.key_version integer NOT NULL DEFAULT 1`,
+  and a rotation script that decrypts every `adapters.encrypted_credential`
+  with the key matching its row's `key_version`, re-encrypts with the
+  new key, and bumps `key_version`. **This is not a pre-`T5` deferral —
+  it's live now.** `kt_register_project` (`T2.2`, already fully shipped,
+  not a stub) already accepts `adapters.github`/`adapters.linear` in its
+  input and calls `encryptCredential` + `upsertAdapter`
+  (`src/mcp/tools/register-project.ts`) today; adapter rows with real
+  encrypted credentials can exist in any deployment right now, well
+  before `T5`'s sync clients are built. A compromised
+  `KNOTRACK_ENCRYPTION_KEY` today has no rotation path for whatever
+  credentials are already stored. The team should prioritize
+  encryption-key rotation ahead of, not after, further `T5` work.
+- **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
+  Appendix B's `SYNC_DRIFT` drift-flag rule depends on
+  `last_github_sync_at`/`last_linear_sync_at` columns that don't exist
+  anywhere in the real schema — not on `tracks`, not on `adapters`,
+  confirmed against `migrations/001_init.sql`. Not a regression (the
+  `drift_flags.kind` CHECK doesn't even have a sync-drift value yet
+  either — this rule was never built, only specified), but it means
+  `SYNC_DRIFT` can't be implemented as currently documented without a
+  schema change first. This needs Paul's call, not a guess: add the two
+  `last_*_sync_at` columns via a new migration. They must be scoped per
+  **track** (either directly on `tracks`, or on a new join table keyed
+  by both `track_id` and `adapter_id`) — **not** on `adapters` alone.
+  `uq_adapters_project_type` allows only one `adapters` row per
+  `(project_id, type)`, so a project with multiple tracks syncing
+  through the same GitHub/Linear adapter would share a single
+  `last_*_sync_at` value: syncing one track would advance that shared
+  timestamp and make every other unsynced track in the project look
+  current too. Putting the column(s) on `adapters` is not a valid
+  alternative to `tracks` for any project with more than one track using
+  the same adapter type — only "redefine the rule against columns that
+  already exist" remains a real alternative to a `tracks`-scoped column.
+  Blocks real progress on `T6` until decided; not urgent before then
+  since `T6` depends on `T5` (adapters), which hasn't started.
+- **Process note, not a backlog item — `T1.6`'s sign-off gate has never
+  formally closed.** `T1.6`'s acceptance criterion is a cross-document
+  consistency pass with "zero open discrepancies," recorded in
+  `docs/SIGNOFF.md` — that file doesn't exist in this repo. This audit
+  alone found three more discrepancies beyond the ones already fixed
+  across PR #1/#2 (the T2 planned-vs-shipped gap and the TRD Appendix
+  A/§5/§1 drift above), which is itself evidence `T1.6` was never
+  actually satisfied — not a new problem to fix here, just worth naming
+  plainly rather than treating "T1 done, T2 blocked" as literal status
+  (see the reconciliation note under `T2`, above).

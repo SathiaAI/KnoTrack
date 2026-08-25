@@ -5,8 +5,11 @@ schema created by [`migrations/001_init.sql`](../migrations/001_init.sql) (rever
 [`migrations/001_init.down.sql`](../migrations/001_init.down.sql)).
 
 - Engine: PostgreSQL 13+
-- Migration tool: `node-pg-migrate`, raw-SQL mode (`001_init.sql` / `001_init.down.sql`
-  is one up/down migration pair)
+- Migration tool: a small custom runner (`scripts/migrate.ts`) over plain numbered
+  raw-SQL files (`001_init.sql` / `001_init.down.sql` is one up/down migration pair) —
+  not `node-pg-migrate`; an earlier draft of this doc named that tool, but it was never
+  added as a project dependency. See `docs/TRD.md` §1 and `scripts/migrate.ts`'s header
+  comment for why.
 - Primary keys: `uuid`, generated with `gen_random_uuid()` (from the `pgcrypto`
   extension, enabled by the migration)
 - Timestamps: `timestamptz`, `created_at`/`updated_at` default to `now()`
@@ -242,6 +245,25 @@ The top-level entity: one row per tracked codebase/initiative.
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Auto-maintained by `trg_projects_set_updated_at` |
 | `deleted_at` | `timestamptz` | nullable | `NULL` = active. See [Soft delete](#soft-delete-vs-hard-delete-for-projects) |
 
+**Constraints:** `uq_projects_source_ref_active` (added by
+`migrations/002_projects_unique_source_ref.sql`) — unique partial index on
+`(source_type, source_ref) WHERE deleted_at IS NULL`. Backs the documented
+`kt_register_project` upsert invariant ("`(source_type, source_ref)` is
+unique; calling again with the same pair updates the existing row, never
+creates a duplicate") at the database level via `INSERT ... ON CONFLICT ...
+DO UPDATE` targeting this index, closing a race where two concurrent
+first-registrations of the same `source_ref` could otherwise both insert.
+Scoped to non-soft-deleted rows, so soft-deleted projects never collide
+with an active one reusing the same `(source_type, source_ref)`. The
+`source_ref` column itself is nullable at the DB level (no `NOT NULL`
+constraint in `migrations/001_init.sql`), but `kt_register_project`'s
+input schema requires it as a non-empty string (`z.string().min(1)`,
+`src/schemas/tools.ts`) for every `source_type` including `'local'`
+(a filesystem path, per `docs/TRD.md`'s tool contract) — so in the
+current build no row is ever actually inserted with `source_ref IS
+NULL` through the real registration path; the column's nullability is
+unused headroom, not something `source_type='local'` projects rely on.
+
 **Indexes:** `idx_projects_not_deleted` — partial index on `(id) WHERE deleted_at IS
 NULL`, backing the "active projects" filter every read path applies.
 
@@ -458,6 +480,19 @@ tracked state — e.g. a file changed that isn't linked to any known item
 | `detail` | `jsonb` | `NOT NULL DEFAULT '{}'` | Structured detail specific to `kind` (e.g. the offending file path, or the expected vs. actual sequence position) |
 | `raised_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 | `resolved_at` | `timestamptz` | nullable | `NULL` = still open. Set once a human or automated process resolves the flag. |
+
+**Constraints:** `uq_drift_flags_open_item_kind` (added by
+`migrations/003_drift_flags_open_unique.sql`) — unique partial index on
+`(item_id, kind) WHERE resolved_at IS NULL`. Backs the "at most one open
+flag per `(item_id, kind)`" invariant the rest of the system assumes, at
+the database level via `INSERT ... ON CONFLICT ... DO NOTHING` in
+`src/db/queries/drift-flags.ts`, closing a race where two concurrent
+`kt_record_session_summary` calls scanning the same out-of-sequence item
+could otherwise both insert an open flag for it. `item_id` is nullable
+(`ON DELETE SET NULL`), so multiple resolved-at-null rows with
+`item_id IS NULL` would remain unaffected by this constraint — not a gap
+in practice, since the only kind this build raises (`out_of_sequence`)
+always sets `item_id`.
 
 **Indexes:**
 - `idx_drift_flags_project_id` on `(project_id)`
