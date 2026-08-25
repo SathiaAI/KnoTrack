@@ -15,6 +15,7 @@
     "start": "node dist/src/index.js",
     "migrate": "tsx scripts/migrate.ts",
     "generate-token": "tsx scripts/generate-token.ts",
+    "rotate-encryption-key": "tsx scripts/rotate-encryption-key.ts",
     "seed-self": "tsx scripts/seed-self.ts",
     "test": "vitest run",
     "test:watch": "vitest",

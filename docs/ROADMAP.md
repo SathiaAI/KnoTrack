@@ -656,27 +656,27 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   started). None of these are load-bearing the way the fixed ones were,
   but they're stale and should be swept in one pass rather than
   piecemeal.
-- **`T9.x` (new, unscheduled) — encryption-key rotation.** TRD §5's
-  "Known gap" bullet says compromising `KNOTRACK_ENCRYPTION_KEY` today
-  has no in-band recovery path: there is no `key_version` column on
-  `adapters` (so old and new keys can't be run side-by-side mid-rotation)
-  and no `scripts/rotate-encryption-key.ts` (or corresponding
-  `package.json` script) to do the re-encrypt sweep. This item is what
-  that TRD bullet points to as "tracked as follow-up work" — previously
-  that claim wasn't backed by an actual backlog entry. Needs: a new
-  migration adding `adapters.key_version integer NOT NULL DEFAULT 1`,
-  and a rotation script that decrypts every `adapters.encrypted_credential`
-  with the key matching its row's `key_version`, re-encrypts with the
-  new key, and bumps `key_version`. **This is not a pre-`T5` deferral —
-  it's live now.** `kt_register_project` (`T2.2`, already fully shipped,
-  not a stub) already accepts `adapters.github`/`adapters.linear` in its
-  input and calls `encryptCredential` + `upsertAdapter`
-  (`src/mcp/tools/register-project.ts`) today; adapter rows with real
-  encrypted credentials can exist in any deployment right now, well
-  before `T5`'s sync clients are built. A compromised
-  `KNOTRACK_ENCRYPTION_KEY` today has no rotation path for whatever
-  credentials are already stored. The team should prioritize
-  encryption-key rotation ahead of, not after, further `T5` work.
+- **`T9.x` — encryption-key rotation. Done, no longer a backlog item.**
+  This was flagged as live-now (not a pre-`T5` deferral), since
+  `kt_register_project` (`T2.2`, already fully shipped) already accepts
+  `adapters.github`/`adapters.linear` and calls `encryptCredential` +
+  `upsertAdapter` today — adapter rows with real encrypted credentials
+  can exist in any deployment before `T5`'s sync clients are even built.
+  Shipped: `migrations/004_adapters_key_version.sql` adds
+  `adapters.key_version integer NOT NULL DEFAULT 1`;
+  `scripts/rotate-encryption-key.ts` (`npm run rotate-encryption-key`)
+  reads the current key from `KNOTRACK_ENCRYPTION_KEY` and the new key
+  from `KNOTRACK_ENCRYPTION_KEY_NEW`, decrypts every `adapters` row with
+  the current key, re-encrypts with the new key, and bumps `key_version`
+  — all inside one transaction, so a failure partway through rolls back
+  every row instead of leaving a mix of old- and new-key rows. See TRD §5
+  for the operator runbook (run the script, then swap
+  `KNOTRACK_ENCRYPTION_KEY` and redeploy — don't restart with the old key
+  still configured in between). Covered by
+  `tests/unit/rotate-encryption-key.test.ts` and
+  `tests/integration/rotate-encryption-key.test.ts` (round-trips a real
+  rotation, rejects rotating to the same key, and confirms a wrong
+  current key rolls back every row rather than partially rotating).
 - **`T9.x` (new, unscheduled) — `SYNC_DRIFT`'s missing schema.** TRD
   Appendix B's `SYNC_DRIFT` drift-flag rule depends on
   `last_github_sync_at`/`last_linear_sync_at` columns that don't exist
