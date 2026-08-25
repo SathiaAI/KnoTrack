@@ -186,8 +186,8 @@ Input schema:
         "github": {
           "type": "object",
           "properties": {
-            "personal_access_token": { "type": "string", "minLength": 1 },
-            "repo": { "type": "string", "minLength": 1, "description": "owner/repo; defaults to source_ref when source_type is 'github'" }
+            "personal_access_token": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "repo": { "type": "string", "minLength": 1, "maxLength": 200, "description": "owner/repo; defaults to source_ref when source_type is 'github'" }
           },
           "required": ["personal_access_token"],
           "additionalProperties": false
@@ -195,8 +195,8 @@ Input schema:
         "linear": {
           "type": "object",
           "properties": {
-            "api_key": { "type": "string", "minLength": 1 },
-            "team_id": { "type": "string", "minLength": 1 }
+            "api_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "team_id": { "type": "string", "minLength": 1, "maxLength": 200 }
           },
           "required": ["api_key", "team_id"],
           "additionalProperties": false
@@ -215,7 +215,7 @@ Example output:
 { "project_id": "3f1a2b4c-9d3e-4a2f-8b21-6f0e2c9a1d55" }
 ```
 
-Errors: `401`; `422` (empty `name`, invalid `source_type`, empty `source_ref`, `adapters.github` present without `personal_access_token`, `adapters.linear` present without both `api_key` and `team_id`, any unknown property); `500` (DB write failure, credential-encryption failure). No `404`, no `409` (see upsert semantics above).
+Errors: `401`; `422` (empty `name`, invalid `source_type`, empty `source_ref`, `adapters.github` present without `personal_access_token`, `adapters.linear` present without both `api_key` and `team_id`, any field exceeding the `maxLength` bounds above, any unknown property); `500` (DB write failure, credential-encryption failure). No `404`, no `409` (see upsert semantics above).
 
 ### 3.3 `kt_get_project_status`
 
@@ -479,6 +479,7 @@ Input schema:
     "files_touched": {
       "type": "array",
       "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+      "maxItems": 500,
       "default": []
     },
     "items_touched": {
@@ -509,7 +510,7 @@ Example output:
 }
 ```
 
-Errors: `401`; `404` (project or track not found, or an `items_touched` id does not exist as an item at all); `422` (empty `summary_text`, a `files_touched` entry is not a string, an `items_touched` id exists but belongs to a **different** track than `track_id`); `500`.
+Errors: `401`; `404` (project or track not found, or an `items_touched` id does not exist as an item at all); `422` (empty `summary_text`, a `files_touched` entry is not a string, `files_touched` exceeding 500 entries or an entry exceeding 1000 characters, an `items_touched` id exists but belongs to a **different** track than `track_id`); `500`.
 
 ### 3.10 `kt_record_decision`
 
@@ -880,11 +881,15 @@ Behavior: no arguments, no auth, no DB access — always `200 OK`, computed enti
 {
   "server_version": "0.1.0",
   "mcp_protocol_version": "2026-07-28",
-  "node_version": "v20.17.0",
   "supported_adapters": ["github", "linear"],
   "instance_started_at": "2026-08-23T09:00:00.000Z"
 }
 ```
+
+`/info` deliberately does not disclose the Node.js runtime version (adversarial-review
+security-5, docs/ROADMAP.md T9.x): it was pure recon value for an unauthenticated caller
+fingerprinting the server ahead of a targeted Node CVE, with no documented client behavior
+depending on it.
 
 ---
 

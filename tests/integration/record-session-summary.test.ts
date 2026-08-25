@@ -233,6 +233,23 @@ describe('kt_record_session_summary', () => {
     expect(row.rowCount).toBe(1);
   });
 
+  // adversarial-review test_quality-1 (docs/ROADMAP.md T9.x): the wrong-track
+  // 422 path above was covered, but the earlier, distinct 404 path — an
+  // items_touched id that isn't a real item at all — never had its own test.
+  it('negative: 404 when an items_touched id does not exist as an item at all', async () => {
+    const { projectId, trackId } = await makeProjectAndTrack();
+
+    await expect(
+      recordSessionSummaryService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        summary_text: 'x',
+        files_touched: [],
+        items_touched: [UNKNOWN_UUID],
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
   it('negative: 422 when an items_touched id belongs to a different track', async () => {
     const { projectId, trackId } = await makeProjectAndTrack();
     const otherTrack = await createTrackService(pool, config, {

@@ -84,6 +84,34 @@ describe('kt_register_project', () => {
     expect(adapterRow.rows[0].config).toMatchObject({ repo: 'acme/widgets', connected: true });
   });
 
+  // adversarial-review test_quality-3 (docs/ROADMAP.md T9.x): the credential
+  // encryption path above was only ever exercised for the github adapter —
+  // the linear branch in registerProjectService (same encrypt-then-store
+  // shape, different config fields) had no equivalent coverage.
+  it('negative: linear adapter credentials are encrypted at rest, never stored as plaintext', async () => {
+    const result = await registerProjectService(pool, config, {
+      name: 'Has Linear Secrets',
+      source_type: 'linear',
+      source_ref: 'acme-team',
+      adapters: {
+        linear: { api_key: 'lin_api_super_secret_value', team_id: 'team_123' },
+      },
+    });
+
+    const adapterRow = await pool.query(
+      'SELECT encrypted_credential, config FROM adapters WHERE project_id = $1 AND type = $2',
+      [result.project_id, 'linear'],
+    );
+    expect(adapterRow.rowCount).toBe(1);
+    const encrypted: Buffer = adapterRow.rows[0].encrypted_credential;
+    expect(encrypted.toString('utf8')).not.toContain('lin_api_super_secret_value');
+    expect(encrypted.toString('base64')).not.toContain(
+      Buffer.from('lin_api_super_secret_value').toString('base64'),
+    );
+    expect(decryptCredential(encrypted, config.encryptionKey)).toBe('lin_api_super_secret_value');
+    expect(adapterRow.rows[0].config).toMatchObject({ team_id: 'team_123', connected: true });
+  });
+
   // adversarial-review P2: an adapter-storage failure used to attach the
   // raw driver/cipher error message to `details.cause`, which runTool
   // serializes verbatim into the client-facing envelope — leaking internals
