@@ -7,8 +7,26 @@
 // server down (or otherwise pausing writes to `adapters`) and redeploying
 // it with the new key.
 //
-// Usage:
-//   KNOTRACK_ENCRYPTION_KEY_NEW=$(openssl rand -base64 32) npm run rotate-encryption-key
+// Usage (local dev, via tsx):
+//   export KNOTRACK_ENCRYPTION_KEY_NEW=$(openssl rand -base64 32)
+//   echo "New key — you'll need this for KNOTRACK_ENCRYPTION_KEY: $KNOTRACK_ENCRYPTION_KEY_NEW"
+//   npm run rotate-encryption-key
+//
+// Usage (Docker / production runtime image): the image's runtime stage
+// has no `tsx` (a devDependency, stripped by `npm ci --omit=dev`) and
+// only copies `dist`, not `scripts/*.ts` — same constraint
+// scripts/migrate.ts already documents in the Dockerfile. Run the
+// compiled output directly instead, same pattern as migrations:
+//   docker run --rm --env-file .env -e KNOTRACK_ENCRYPTION_KEY_NEW=<value> \
+//     <image> node dist/scripts/rotate-encryption-key.js
+//
+// Generate and save the new key value *before* running either form —
+// `export`, not a same-line `VAR=value command` prefix, so it survives
+// in your shell after the command exits, and echo it so you can copy it
+// somewhere durable. The script itself also prints it back on success
+// (see main(), below) as a second line of defense: if the value is lost
+// after rotation completes, every stored adapter credential becomes
+// permanently undecryptable — there is no way to recover it.
 //
 // Reads the CURRENT key from KNOTRACK_ENCRYPTION_KEY (same as every other
 // entrypoint, via loadConfig()) and the NEW key from
@@ -75,14 +93,30 @@ export async function rotateEncryptionKey(
 async function main(): Promise<void> {
   loadDotEnvIfPresent();
   const config = loadConfig();
-  const newKey = parseNewKey(process.env.KNOTRACK_ENCRYPTION_KEY_NEW);
+  // Kept as the original base64 string (not just the decoded Buffer) so
+  // it can be echoed back verbatim below — the exact value the operator
+  // must paste into KNOTRACK_ENCRYPTION_KEY, not a re-derived encoding of
+  // it that could subtly differ.
+  const newKeyRaw = process.env.KNOTRACK_ENCRYPTION_KEY_NEW;
+  const newKey = parseNewKey(newKeyRaw);
 
   const pool = createPool(config);
   try {
     const rotatedCount = await rotateEncryptionKey(pool, config.encryptionKey, newKey);
+    // Codex finding on PR #4 (P1): the documented one-line usage
+    // (`KNOTRACK_ENCRYPTION_KEY_NEW=$(openssl rand -base64 32) npm run
+    // rotate-encryption-key`) scopes the generated value to the npm
+    // child process only — it never lands in the operator's shell and
+    // this script never echoed it, so following that exact usage lost
+    // the new key forever the moment this process exited, making every
+    // just-rotated credential permanently undecryptable. Printing it
+    // back here is the same "print secrets to stdout only, never persist
+    // them" convention scripts/generate-token.ts already uses — a second
+    // line of defense regardless of how the caller obtained the value.
     console.log(
-      `rotated ${rotatedCount} adapter credential(s). ` +
-        'Now set KNOTRACK_ENCRYPTION_KEY to the new key value and redeploy — ' +
+      `rotated ${rotatedCount} adapter credential(s).\n` +
+        `New key (save this now — it cannot be recovered otherwise): ${newKeyRaw}\n` +
+        'Set KNOTRACK_ENCRYPTION_KEY to the value above and redeploy — ' +
         'do not restart the server with the old key still configured.',
     );
   } finally {
