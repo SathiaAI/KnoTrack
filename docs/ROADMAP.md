@@ -740,7 +740,14 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   column tables, specifically — not leave it for review to catch after
   the fact.
 - **`T2.5`/`T2.6` — `kt_list_tracks`/`kt_get_track` implemented + tested
-  (T2 build-out, first slice of the remaining 6 stub tools, 2026-08-26).**
+  (T2 build-out, first of 3 planned PRs covering the 6 tools T2 still
+  needs, 2026-08-26).** Before this PR, 6 tools were left to build for
+  T2 (`kt_list_tracks`, `kt_get_track`, `kt_get_next_steps`,
+  `kt_record_decision`, `kt_update_item_status`, `kt_render_roadmap`).
+  This PR ships the first 2, leaving 4 T2 tools plus 3 stubs that are
+  deliberately out of T2 scope (`kt_check_drift` → `T6`;
+  `kt_sync_to_github`/`kt_sync_to_linear` → `T5`) — 7 total still in
+  `stubs.ts`, matching this section's own header above.
   Both against the existing schema, no migration needed. `kt_list_tracks`:
   new `listTracksForListing` query (`src/db/queries/tracks.ts`) extends
   the existing item-counts aggregate with an optional `status` filter and

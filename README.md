@@ -16,10 +16,10 @@ harness — not just one vendor's tool.
 
 ## Status
 
-Pre-release, v0.1.0. 5 of the 14 planned tools are implemented and
+Pre-release, v0.1.0. 7 of the 14 planned tools are implemented and
 dogfooded (KnoTrack tracks its own build using itself — see
 [`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1);
-the remaining 9 are registered with their real, TRD-accurate input schemas
+the remaining 7 are registered with their real, TRD-accurate input schemas
 so `tools/list` already reflects the full surface, but each currently
 returns a clear "not yet implemented" error rather than doing partial work.
 
@@ -44,8 +44,8 @@ include full diffs and raw model output.
 | `kt_create_track` | implemented | Create a track (a sequenced line of work) under a project |
 | `kt_create_item` | implemented | Create an item within a track, auto- or explicitly-sequenced |
 | `kt_record_session_summary` | implemented | Record a session's summary and re-check for drift |
-| `kt_list_tracks` | planned | List a project's tracks, optionally filtered by status |
-| `kt_get_track` | planned | Track detail: items plus dependency graph |
+| `kt_list_tracks` | implemented | List a project's tracks, optionally filtered by status |
+| `kt_get_track` | implemented | Track detail: items plus dependency graph |
 | `kt_get_next_steps` | planned | Suggested next items given current status and dependencies |
 | `kt_record_decision` | planned | Record a decision and the context behind it |
 | `kt_update_item_status` | planned | Move an item's status forward (or flag it blocked) |
