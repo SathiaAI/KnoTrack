@@ -775,3 +775,49 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   topological sort over `track_dependencies`, plus the wall-clock
   truncation/timeout budget TRD §6.3 requires), so it's planned as its
   own PR rather than bundled with the simpler write-path tools.
+- **`T2.5`(cont.)/`T2.12` — `kt_get_next_steps`/`kt_render_roadmap` implemented
+  + tested (T2 build-out, second of 3 planned PRs, 2026-08-26).** Before
+  this PR, 4 T2 tools remained (`kt_get_next_steps`, `kt_record_decision`,
+  `kt_update_item_status`, `kt_render_roadmap`). This PR ships these 2,
+  leaving 2 T2 tools (`kt_record_decision`, `kt_update_item_status`) plus
+  the same 3 stubs deliberately out of T2 scope (`kt_check_drift` → `T6`;
+  `kt_sync_to_github`/`kt_sync_to_linear` → `T5`) — 5 total still in
+  `stubs.ts` (down from 7 after PR #7, matching this build's running
+  count in `docs/TRD.md` §2 and `README.md`'s tool table).
+  `kt_get_next_steps`: new pure `rankNextSteps` (`src/domain/next-steps.ts`)
+  implements TRD §3.8's steps 1-6 against three new/extended queries
+  (`getTrackSummariesForProject` in `tracks.ts`; `listPendingItemsForProject`
+  and `getItemStatusesForProject` in `items.ts`) — no migration needed,
+  same schema. `kt_render_roadmap`: the harder of the two, needing new
+  infrastructure neither prior T2 tool had — a `topoSort` (Kahn's
+  algorithm over the reversed `track_dependencies` edge direction, added
+  to `src/domain/dependency-graph.ts` alongside `hasCycle`/`wouldCreateCycle`)
+  and a pure `src/domain/roadmap-renderer.ts` for the markdown/mermaid
+  string-building, both DB-free and unit-tested in isolation. The §6.3
+  wall-clock truncation budget deliberately reuses `config.driftScanTimeoutMs`
+  rather than inventing an undocumented `KNOTRACK_ROADMAP_TIMEOUT_MS` (no
+  such env var exists in `src/config/env.ts`), and is implemented as a
+  plain elapsed-time check between each track's item-query `await` rather
+  than a literal `Promise.race` — a tight synchronous render loop can't be
+  preempted by a pending timer on Node's single event loop, so a `race`
+  wrapped around it would be dead code that looks like a safety net but
+  isn't; see `render-roadmap.ts`'s top-of-file comment for the full
+  reasoning, in the same style as `tool-helpers.ts`'s. Because that timing
+  path is inherently non-deterministic to assert in CI, it's reasoned
+  about in that comment rather than tested; the cap-based truncation path
+  (`KNOTRACK_ROADMAP_TRACK_CAP`/`KNOTRACK_ROADMAP_ITEM_PER_TRACK_CAP`) is
+  what's actually covered, by integration tests that override those caps
+  on a cloned test config. 26 new unit tests (`topoSort` cases added to
+  the existing `dependency-graph.test.ts`; new `roadmap-renderer.test.ts`
+  and `next-steps.test.ts`) plus 15 new integration tests
+  (`get-next-steps.test.ts`, `render-roadmap.test.ts`), full suite
+  149/149 passing. One judgment call worth recording: TRD §3.8's fixed
+  reason-template prose is `"All {n} dependencies complete — ..."` (always
+  plural "dependencies"), but its own worked example for `n = 1` shows
+  singular "dependency" — the prose and the example disagree with each
+  other for exactly that case. This build follows the worked example
+  (singular for `n = 1`, plural otherwise), matching the same
+  singular/plural handling `kt_update_item_status`'s `"N unmet
+  dependency/dependencies"` message already uses for the same reason: the
+  concrete JSON example is the more authoritative statement of actual wire
+  output, and the prose is the imprecise part.

@@ -74,3 +74,69 @@ export function wouldCreateCycle(
   const proposedEdges: Edge[] = deduped.map((to) => ({ from: newNodeId, to }));
   return hasCycle([...existingEdges, ...proposedEdges]);
 }
+
+/**
+ * Topological ordering for kt_render_roadmap (TRD §3.13): returns
+ * `allNodeIds` reordered so that for every edge {from, to} ("from depends
+ * on to"), `to` appears before `from` — prerequisites first, dependents
+ * last. This is Kahn's algorithm run over the *reversed* edge direction:
+ * a node becomes eligible to emit once every node it depends on has
+ * already been emitted, so we repeatedly scan for the earliest-ordered
+ * still-eligible node rather than tracking in-degrees directly.
+ *
+ * Ties among simultaneously-eligible nodes are broken by `allNodeIds`'s
+ * own input order (a stable pick of "first eligible node encountered").
+ * Callers that want a specific tie-break (e.g. created_at ascending, this
+ * repo's existing default track ordering — see
+ * `listTracksWithItemCounts`'s `ORDER BY t.created_at ASC`) should
+ * pre-sort `allNodeIds` before calling.
+ *
+ * Defends against a cycle that should be structurally impossible —
+ * `wouldCreateCycle` above already prevents one from ever being written
+ * at create-track time — by appending whatever nodes are left over, in
+ * their original input order, rather than throwing. kt_render_roadmap is
+ * a read-only reporting tool; it should degrade rather than hard-fail on
+ * a pre-existing data invariant violation it has no way to repair.
+ */
+export function topoSort(allNodeIds: string[], edges: Edge[]): string[] {
+  const nodeSet = new Set(allNodeIds);
+  const prereqsOf = new Map<string, Set<string>>();
+  for (const id of allNodeIds) {
+    prereqsOf.set(id, new Set());
+  }
+  for (const edge of edges) {
+    // Ignore edges referencing a node outside allNodeIds (defensive —
+    // callers are expected to pass a consistent node/edge set, but this
+    // keeps the function total rather than throwing on a mismatch).
+    if (!nodeSet.has(edge.from) || !nodeSet.has(edge.to)) continue;
+    prereqsOf.get(edge.from)!.add(edge.to);
+  }
+
+  const emitted = new Set<string>();
+  const result: string[] = [];
+  const remaining = [...allNodeIds];
+
+  while (remaining.length > 0) {
+    const eligibleIndex = remaining.findIndex((id) => {
+      const prereqs = prereqsOf.get(id)!;
+      for (const prereq of prereqs) {
+        if (!emitted.has(prereq)) return false;
+      }
+      return true;
+    });
+
+    if (eligibleIndex === -1) {
+      // Cycle fallback: nothing in `remaining` is eligible, meaning
+      // every remaining node has an un-emitted prerequisite also stuck
+      // in `remaining` — a cycle. Append the rest in input order.
+      result.push(...remaining);
+      break;
+    }
+
+    const [id] = remaining.splice(eligibleIndex, 1);
+    result.push(id!);
+    emitted.add(id!);
+  }
+
+  return result;
+}

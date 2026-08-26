@@ -40,6 +40,31 @@ export async function getTrackStatusesForProject(
   return new Map(result.rows.map((row) => [row.id, row.status]));
 }
 
+export interface TrackSummary {
+  id: string;
+  title: string;
+  status: TrackStatus;
+}
+
+/** Every track's {id, title, status} for a project, ordered by
+ * created_at ascending — this repo's existing default track ordering
+ * (see listTracksWithItemCounts's `ORDER BY t.created_at ASC`). Used by
+ * kt_get_next_steps (looking up each pending item's track) and
+ * kt_render_roadmap (topoSort's tie-break input order). Kept separate
+ * from getTrackStatusesForProject (status only, no title) rather than
+ * changing that function's return shape, since get-project-status.ts and
+ * others may rely on it staying status-only. */
+export async function getTrackSummariesForProject(
+  db: Queryable,
+  projectId: string,
+): Promise<TrackSummary[]> {
+  const result = await db.query<TrackSummary>(
+    `SELECT id, title, status FROM tracks WHERE project_id = $1 ORDER BY created_at ASC`,
+    [projectId],
+  );
+  return result.rows;
+}
+
 /** All track_dependencies edges within a project, as {from, to} where
  * `from` depends on `to` — the shape dependency-graph.ts expects. */
 export async function getTrackDependencyEdges(db: Queryable, projectId: string): Promise<Edge[]> {

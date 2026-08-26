@@ -169,9 +169,7 @@ describe('scripts/migrate.ts applyMigrations', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       await pool.query('DROP TABLE IF EXISTS knotrack_migrate_test_comment_header');
-      await pool.query(
-        `DELETE FROM schema_migrations WHERE name = '903_test_comment_header.sql'`,
-      );
+      await pool.query(`DELETE FROM schema_migrations WHERE name = '903_test_comment_header.sql'`);
     }
   });
 
