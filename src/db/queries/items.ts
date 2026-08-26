@@ -125,3 +125,66 @@ export async function listItemsByTrack(db: Queryable, trackId: string): Promise<
   );
   return result.rows;
 }
+
+/** kt_update_item_status (TRD §3.11): find one item scoped to its
+ * project, distinguishing "doesn't exist at all" from "exists but a
+ * different project" (404 either way, per TRD) the same way
+ * findTrackById (tracks.ts) scopes tracks by project. Items don't carry
+ * `project_id` directly, so this joins through the owning track. */
+export async function findItemInProject(
+  db: Queryable,
+  projectId: string,
+  itemId: string,
+): Promise<ItemRow | null> {
+  const result = await db.query<ItemRow>(
+    `SELECT i.*
+     FROM items i
+     JOIN tracks t ON t.id = i.track_id
+     WHERE i.id = $1 AND t.project_id = $2`,
+    [itemId, projectId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * The ids of `itemId`'s dependencies (via item_dependencies) whose status
+ * is not currently 'done' — the unmet set kt_update_item_status's
+ * transition-to-done check needs (TRD §3.11).
+ *
+ * Locks each dependency's item row (`FOR UPDATE OF dep`) while reading.
+ * This is a read-then-write, same shape as the race
+ * lockTrackForSequenceAssignment (above) guards against for
+ * sequence_position: the caller is about to decide, based on this read,
+ * whether to write `status = 'done'` on `itemId`. Without the lock, a
+ * concurrent kt_update_item_status call moving one of these dependencies
+ * *off* 'done' could commit in the gap between this read and that write,
+ * letting `itemId` be marked done against a dependency that is no longer
+ * done by the time either transaction settles. Locking the dependency
+ * rows here forces that concurrent call to wait until this transaction
+ * commits or rolls back, so the two calls serialize instead of racing.
+ * Must be called inside the same transaction as the eventual status
+ * UPDATE — a bare Pool would release the lock immediately, which is why
+ * this takes a PoolClient, not the shared Queryable type.
+ */
+export async function getUnmetDependencyIds(db: PoolClient, itemId: string): Promise<string[]> {
+  const result = await db.query<{ id: string; status: ItemStatus }>(
+    `SELECT dep.id, dep.status
+     FROM item_dependencies idep
+     JOIN items dep ON dep.id = idep.depends_on_item_id
+     WHERE idep.item_id = $1
+     FOR UPDATE OF dep`,
+    [itemId],
+  );
+  return result.rows.filter((row) => row.status !== 'done').map((row) => row.id);
+}
+
+/** kt_update_item_status (TRD §3.11). No `updated_at` here —
+ * `trg_items_set_updated_at` (migrations/001_init.sql) already bumps it
+ * on every UPDATE. */
+export async function updateItemStatus(
+  db: Queryable,
+  itemId: string,
+  status: ItemStatus,
+): Promise<void> {
+  await db.query(`UPDATE items SET status = $1 WHERE id = $2`, [status, itemId]);
+}

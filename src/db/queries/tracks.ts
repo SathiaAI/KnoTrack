@@ -53,6 +53,20 @@ export async function getTrackDependencyEdges(db: Queryable, projectId: string):
   return result.rows.map((row) => ({ from: row.track_id, to: row.depends_on_track_id }));
 }
 
+/** kt_record_decision (TRD §3.10): one of exactly two write paths for
+ * `tracks.status` (the other is insertTrack's status-at-creation logic in
+ * create-track.ts). No `updated_at` here — `trg_tracks_set_updated_at`
+ * (migrations/001_init.sql) already bumps it on every UPDATE, so setting
+ * it manually here would be redundant with (and could drift from) the
+ * trigger's `now()`. */
+export async function updateTrackStatus(
+  db: Queryable,
+  trackId: string,
+  status: TrackStatus,
+): Promise<void> {
+  await db.query(`UPDATE tracks SET status = $1 WHERE id = $2`, [status, trackId]);
+}
+
 export async function insertTrack(
   db: Queryable,
   input: {

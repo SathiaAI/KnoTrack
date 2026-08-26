@@ -663,13 +663,15 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   as separate files under `src/mcp/tools/` when they were all actually
   in one `stubs.ts` — **partially resolved 2026-08-26**: `list-tracks.ts`
   and `get-track.ts` are now real files matching the tree (T2 build-out,
-  first slice, below), leaving 7 still bundled in `stubs.ts`. Also still
-  open: TRD §2 lists a `decisions.ts` query file that doesn't exist yet
-  (nothing writes `decisions` until `kt_record_decision` is built); and
-  shows a `src/adapters/` tree that doesn't exist at all yet (`T5` not
-  started). None of these are load-bearing the way the fixed ones were,
-  but they're stale and should be swept in one pass rather than
-  piecemeal.
+  first slice, below); `record-decision.ts` and `update-item-status.ts`
+  are now real files too (T2 build-out, second slice, below), leaving 5
+  still bundled in `stubs.ts`. `src/db/queries/decisions.ts` (also
+  flagged here as not existing yet) now exists as well, shipped
+  alongside `record-decision.ts` in that same second slice. Still open:
+  TRD §2 shows a `src/adapters/` tree that doesn't exist at all yet
+  (`T5` not started). This is not load-bearing the way the fixed ones
+  were, but it's stale and should be swept when `T5` starts rather than
+  piecemeal before then.
 - **`T9.x` — encryption-key rotation. Done, no longer a backlog item.**
   This was flagged as live-now (not a pre-`T5` deferral), since
   `kt_register_project` (`T2.2`, already fully shipped) already accepts
@@ -775,3 +777,43 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   topological sort over `track_dependencies`, plus the wall-clock
   truncation/timeout budget TRD §6.3 requires), so it's planned as its
   own PR rather than bundled with the simpler write-path tools.
+- **`T2.8`/`T2.10` — `kt_update_item_status`/`kt_record_decision` implemented
+  + tested (T2 build-out, second of 3 planned PRs covering the 6 tools T2
+  still needed, 2026-08-26).** Before this PR, 4 T2 tools were left to
+  build (`kt_get_next_steps`, `kt_record_decision`, `kt_update_item_status`,
+  `kt_render_roadmap`), per the PR-#7 entry above. This PR ships 2 more,
+  leaving 2 T2 tools not started (`kt_get_next_steps`, `kt_render_roadmap`)
+  plus the same 3 stubs deliberately out of T2 scope (`kt_check_drift` →
+  `T6`; `kt_sync_to_github`/`kt_sync_to_linear` → `T5`) — 5 total still in
+  `stubs.ts`, matching this section's own header above and TRD §2's
+  staleness paragraph. 9 of the 14 tools are now fully implemented.
+  `kt_record_decision`: new `insertDecision` query
+  (`src/db/queries/decisions.ts`, new file — the query file TRD §2 and
+  this doc's backlog section both flagged as not existing yet) plus a new
+  `updateTrackStatus` helper (`src/db/queries/tracks.ts`); both against
+  the existing schema, no migration needed. Sets the referenced track's
+  `status` to `pivot_pending` in the same transaction as the decision
+  insert, per TRD §3.10 — the second of exactly two write paths for
+  `tracks.status` (the other being `kt_create_track` at creation time).
+  `kt_update_item_status`: new `findItemInProject` (items scoped to
+  project via the owning track, mirroring `findTrackById`'s
+  project-scoping pattern), `getUnmetDependencyIds`, and
+  `updateItemStatus` (all `src/db/queries/items.ts`). The
+  transition-to-`done` dependency check only runs on an actual transition
+  into `done` (current status ≠ `done`) — a `done → done` no-op performs
+  no dependency check at all, per TRD §3.11's explicit callout, and is
+  covered by a dedicated test using an item with an unmet dependency
+  forced to `done` directly in the DB. Neither trigger-backed `updated_at`
+  column (`trg_tracks_set_updated_at`/`trg_items_set_updated_at`,
+  `migrations/001_init.sql`) is set manually by either tool — both
+  columns are already covered by their existing triggers. Deliberate
+  concurrency choice, worth recording: `getUnmetDependencyIds` locks each
+  dependency's item row (`FOR UPDATE OF dep`) while reading its status,
+  inside the same transaction as the following status `UPDATE` — the same
+  read-then-write TOCTOU rationale `lockTrackForSequenceAssignment`
+  (`src/db/queries/items.ts`, PR #1) already established for
+  `sequence_position`, applied here so a concurrent status change on one
+  of an item's dependencies can't race past this check while it's mid-way
+  through deciding whether the pending `done` transition is even allowed.
+  15 new integration tests (`tests/integration/record-decision.test.ts`,
+  `update-item-status.test.ts`), full suite 123/123 passing.

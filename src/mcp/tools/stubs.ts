@@ -1,4 +1,4 @@
-// Stub registrations for the 7 tools out of scope for this build. Each is
+// Stub registrations for the 5 tools out of scope for this build. Each is
 // registered with its real, TRD-accurate input schema (so `tools/list`
 // reflects the full 14-tool surface and clients can still see the exact
 // contract) but the handler always returns a clear "not yet implemented"
@@ -6,12 +6,12 @@
 //
 // kt_list_tracks and kt_get_track moved out of this file to
 // list-tracks.ts / get-track.ts once implemented (T2 build-out, first
-// slice) — see server.ts for their registration.
+// slice). kt_record_decision and kt_update_item_status moved out to
+// record-decision.ts / update-item-status.ts once implemented (T2
+// build-out, second slice) — see server.ts for their registration.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   getNextStepsInputSchema,
-  recordDecisionInputSchema,
-  updateItemStatusInputSchema,
   checkDriftInputSchema,
   renderRoadmapInputSchema,
   syncToGithubInputSchema,
@@ -36,20 +36,6 @@ const STUBS: StubSpec[] = [
       'Advisory-only ranked list of unblocked items. Never assigns, claims, or locks anything.',
     inputSchema: getNextStepsInputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  },
-  {
-    name: 'kt_record_decision',
-    title: 'Record decision',
-    description:
-      "Logs an explicit pivot/decision against a track; sets that track's stored status to pivot_pending.",
-    inputSchema: recordDecisionInputSchema,
-  },
-  {
-    name: 'kt_update_item_status',
-    title: 'Update item status',
-    description:
-      "Changes an item's status; transitioning to done requires all its dependencies to already be done.",
-    inputSchema: updateItemStatusInputSchema,
   },
   {
     name: 'kt_check_drift',

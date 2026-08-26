@@ -11,6 +11,8 @@ import { registerGetProjectStatusTool } from './tools/get-project-status.js';
 import { registerRecordSessionSummaryTool } from './tools/record-session-summary.js';
 import { registerListTracksTool } from './tools/list-tracks.js';
 import { registerGetTrackTool } from './tools/get-track.js';
+import { registerRecordDecisionTool } from './tools/record-decision.js';
+import { registerUpdateItemStatusTool } from './tools/update-item-status.js';
 import { registerStubTools } from './tools/stubs.js';
 
 export interface Logger {
@@ -23,7 +25,7 @@ export function buildMcpServer(pool: Pool, config: Config, logger: Logger): McpS
     version: '0.1.0',
   });
 
-  // 7 fully implemented tools.
+  // 9 fully implemented tools.
   registerProjectTool(server, pool, config, logger);
   registerGetProjectStatusTool(server, pool, config, logger);
   registerCreateTrackTool(server, pool, config, logger);
@@ -31,8 +33,10 @@ export function buildMcpServer(pool: Pool, config: Config, logger: Logger): McpS
   registerRecordSessionSummaryTool(server, pool, config, logger);
   registerListTracksTool(server, pool, config, logger);
   registerGetTrackTool(server, pool, config, logger);
+  registerRecordDecisionTool(server, pool, config, logger);
+  registerUpdateItemStatusTool(server, pool, config, logger);
 
-  // 7 stubs — registered so tools/list reflects the full 14-tool surface.
+  // 5 stubs — registered so tools/list reflects the full 14-tool surface.
   registerStubTools(server);
 
   return server;
