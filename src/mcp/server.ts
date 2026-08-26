@@ -9,6 +9,8 @@ import { registerCreateTrackTool } from './tools/create-track.js';
 import { registerCreateItemTool } from './tools/create-item.js';
 import { registerGetProjectStatusTool } from './tools/get-project-status.js';
 import { registerRecordSessionSummaryTool } from './tools/record-session-summary.js';
+import { registerListTracksTool } from './tools/list-tracks.js';
+import { registerGetTrackTool } from './tools/get-track.js';
 import { registerStubTools } from './tools/stubs.js';
 
 export interface Logger {
@@ -21,14 +23,16 @@ export function buildMcpServer(pool: Pool, config: Config, logger: Logger): McpS
     version: '0.1.0',
   });
 
-  // 5 fully implemented tools.
+  // 7 fully implemented tools.
   registerProjectTool(server, pool, config, logger);
   registerGetProjectStatusTool(server, pool, config, logger);
   registerCreateTrackTool(server, pool, config, logger);
   registerCreateItemTool(server, pool, config, logger);
   registerRecordSessionSummaryTool(server, pool, config, logger);
+  registerListTracksTool(server, pool, config, logger);
+  registerGetTrackTool(server, pool, config, logger);
 
-  // 9 stubs — registered so tools/list reflects the full 14-tool surface.
+  // 7 stubs — registered so tools/list reflects the full 14-tool surface.
   registerStubTools(server);
 
   return server;

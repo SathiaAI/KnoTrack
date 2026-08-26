@@ -119,3 +119,51 @@ export async function listTracksWithItemCounts(
   );
   return result.rows;
 }
+
+/** All track_dependencies ids for one track, e.g. kt_get_track's
+ * `track.depends_on_track_ids` (TRD §3.5). */
+export async function getDependsOnTrackIds(db: Queryable, trackId: string): Promise<string[]> {
+  const result = await db.query<{ depends_on_track_id: string }>(
+    `SELECT depends_on_track_id FROM track_dependencies
+     WHERE track_id = $1
+     ORDER BY depends_on_track_id`,
+    [trackId],
+  );
+  return result.rows.map((row) => row.depends_on_track_id);
+}
+
+export interface TrackWithCountsAndDeps extends TrackWithCounts {
+  depends_on_track_ids: string[];
+}
+
+/** kt_list_tracks (TRD §3.4): like listTracksWithItemCounts, plus each
+ * track's own depends_on_track_ids and an optional status filter. Kept
+ * as its own query rather than extending listTracksWithItemCounts so
+ * kt_get_project_status's existing shape/callers are untouched. */
+export async function listTracksForListing(
+  db: Queryable,
+  projectId: string,
+  status: TrackStatus | undefined,
+): Promise<TrackWithCountsAndDeps[]> {
+  const result = await db.query<TrackWithCountsAndDeps>(
+    `SELECT
+       t.*,
+       COALESCE(SUM((i.status = 'pending')::int), 0)::int AS pending,
+       COALESCE(SUM((i.status = 'in_progress')::int), 0)::int AS in_progress,
+       COALESCE(SUM((i.status = 'done')::int), 0)::int AS done,
+       COALESCE(SUM((i.status = 'blocked')::int), 0)::int AS blocked,
+       COALESCE(
+         (SELECT array_agg(td.depends_on_track_id ORDER BY td.depends_on_track_id)
+          FROM track_dependencies td
+          WHERE td.track_id = t.id),
+         ARRAY[]::uuid[]
+       ) AS depends_on_track_ids
+     FROM tracks t
+     LEFT JOIN items i ON i.track_id = t.id
+     WHERE t.project_id = $1 AND ($2::text IS NULL OR t.status = $2)
+     GROUP BY t.id
+     ORDER BY t.created_at ASC`,
+    [projectId, status ?? null],
+  );
+  return result.rows;
+}

@@ -659,9 +659,12 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   `DATABASE_SCHEMA.md`'s two remaining secondary `node-pg-migrate`
   mentions (both in parenthetical rationale, lower-stakes than the
   top-of-doc claim already fixed). Also found this round but not fixed:
-  TRD §2's Repository Layout tree lists the 9 unimplemented tools as
-  separate files under `src/mcp/tools/` when they're all actually in one
-  `stubs.ts`; lists a `decisions.ts` query file that doesn't exist yet
+  TRD §2's Repository Layout tree listed the then-9 unimplemented tools
+  as separate files under `src/mcp/tools/` when they were all actually
+  in one `stubs.ts` — **partially resolved 2026-08-26**: `list-tracks.ts`
+  and `get-track.ts` are now real files matching the tree (T2 build-out,
+  first slice, below), leaving 7 still bundled in `stubs.ts`. Also still
+  open: TRD §2 lists a `decisions.ts` query file that doesn't exist yet
   (nothing writes `decisions` until `kt_record_decision` is built); and
   shows a `src/adapters/` tree that doesn't exist at all yet (`T5` not
   started). None of these are load-bearing the way the fixed ones were,
@@ -736,3 +739,39 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   commit** — `docs/TRD.md` §3's JSON-schema blocks and `docs/DATABASE_SCHEMA.md`'s
   column tables, specifically — not leave it for review to catch after
   the fact.
+- **`T2.5`/`T2.6` — `kt_list_tracks`/`kt_get_track` implemented + tested
+  (T2 build-out, first of 3 planned PRs covering the 6 tools T2 still
+  needs, 2026-08-26).** Before this PR, 6 tools were left to build for
+  T2 (`kt_list_tracks`, `kt_get_track`, `kt_get_next_steps`,
+  `kt_record_decision`, `kt_update_item_status`, `kt_render_roadmap`).
+  This PR ships the first 2, leaving 4 T2 tools plus 3 stubs that are
+  deliberately out of T2 scope (`kt_check_drift` → `T6`;
+  `kt_sync_to_github`/`kt_sync_to_linear` → `T5`) — 7 total still in
+  `stubs.ts`, matching this section's own header above.
+  Both against the existing schema, no migration needed. `kt_list_tracks`:
+  new `listTracksForListing` query (`src/db/queries/tracks.ts`) extends
+  the existing item-counts aggregate with an optional `status` filter and
+  each track's own `depends_on_track_ids` (kept as its own query rather
+  than changing `listTracksWithItemCounts`, which `kt_get_project_status`
+  already depends on). `kt_get_track`: entirely reused existing query
+  helpers (`findTrackById`, `listItemsByTrack`,
+  `getItemDependencyEdgesForTrack`) plus one new one-track-scoped
+  `getDependsOnTrackIds`; no new query patterns needed. Both use
+  `withReadSnapshot` (one consistent DB snapshot per call, same as
+  `kt_get_project_status`). 12 new integration tests
+  (`tests/integration/list-tracks.test.ts`, `get-track.test.ts`), full
+  suite 108/108 passing. One deliberate deviation from `docs/TEST_CASES.md`'s
+  literal LTRK-08/GTRK-08/GTRK-09 wording, worth recording since it's easy
+  to miss on a future read: those rows describe a per-token/per-project
+  auth scoping model ("token for P2, `project_id`=P1 → 404") that doesn't
+  exist in this build — `KNOTRACK_API_TOKENS` is one flat pool with no
+  per-project scoping (`src/server/auth.ts`, TRD §4) — so the tests
+  instead assert the real remaining 404 case: a `track_id` that belongs
+  to a different project than the `project_id` passed in, same token,
+  which `findTrackById`'s `WHERE id = $1 AND project_id = $2` already
+  enforces. Remaining T2 tools — `kt_get_next_steps`, `kt_record_decision`,
+  `kt_update_item_status`, `kt_render_roadmap` — not started; `kt_render_roadmap`
+  in particular needs new infrastructure this build doesn't have yet (a
+  topological sort over `track_dependencies`, plus the wall-clock
+  truncation/timeout budget TRD §6.3 requires), so it's planned as its
+  own PR rather than bundled with the simpler write-path tools.
