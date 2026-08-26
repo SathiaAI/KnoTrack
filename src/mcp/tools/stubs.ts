@@ -1,12 +1,14 @@
-// Stub registrations for the 9 tools out of scope for this build. Each is
+// Stub registrations for the 7 tools out of scope for this build. Each is
 // registered with its real, TRD-accurate input schema (so `tools/list`
 // reflects the full 14-tool surface and clients can still see the exact
 // contract) but the handler always returns a clear "not yet implemented"
 // isError result rather than doing any work.
+//
+// kt_list_tracks and kt_get_track moved out of this file to
+// list-tracks.ts / get-track.ts once implemented (T2 build-out, first
+// slice) — see server.ts for their registration.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
-  listTracksInputSchema,
-  getTrackInputSchema,
   getNextStepsInputSchema,
   recordDecisionInputSchema,
   updateItemStatusInputSchema,
@@ -27,20 +29,6 @@ interface StubSpec {
 }
 
 const STUBS: StubSpec[] = [
-  {
-    name: 'kt_list_tracks',
-    title: 'List tracks',
-    description: "List a project's tracks, optionally filtered by status.",
-    inputSchema: listTracksInputSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
-  },
-  {
-    name: 'kt_get_track',
-    title: 'Get track',
-    description: 'Track detail: items plus dependency graph.',
-    inputSchema: getTrackInputSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
-  },
   {
     name: 'kt_get_next_steps',
     title: 'Get next steps',
