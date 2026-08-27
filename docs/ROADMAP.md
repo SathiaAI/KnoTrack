@@ -816,4 +816,8 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   of an item's dependencies can't race past this check while it's mid-way
   through deciding whether the pending `done` transition is even allowed.
   15 new integration tests (`tests/integration/record-decision.test.ts`,
-  `update-item-status.test.ts`), full suite 123/123 passing.
+  `update-item-status.test.ts`) at initial push, full suite 123/123 passing;
+  17 new integration tests and full suite 125/125 passing after the review-
+  round-1 fix (2026-08-27, commit `e360f2a7dbb3899ee44c33a9d093bb8cb575d46d`)
+  addressing Codex's `findItemInProject`/`getUnmetDependencyIds` locking
+  findings above.
