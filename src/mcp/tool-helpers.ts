@@ -86,7 +86,7 @@ export async function runTool<T extends Record<string, unknown>>(
   }
 }
 
-/** A "not yet implemented" stub result for the 9 tools out of scope for
+/** A "not yet implemented" stub result for the 5 tools out of scope for
  * this build (see the tool table in docs/TRD.md §2 / the repo layout). */
 export function notImplementedResult(toolName: string): ToolTextResult {
   const envelope = {
