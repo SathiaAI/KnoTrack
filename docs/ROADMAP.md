@@ -182,24 +182,36 @@ so it is built and unit-tested as part of `T2.15`'s hardening pass rather
 than getting its own numbered item.
 
 **Status reconciliation (added retroactively — this Track's items above
-describe the plan, not yet what shipped).** As of the current build, only
-5 of the 14 tools have the full implementation this Track calls for:
-`kt_register_project` (`T2.2`), `kt_create_track` (`T2.3`),
-`kt_create_item` (`T2.4`), `kt_get_project_status` (`T2.7`), and
-`kt_record_session_summary` (`T2.9` — see below, it actually exceeds its
-own acceptance criterion). The other 9 are registered as stubs
+describe the plan, not yet what shipped at the time this note was
+written).** **Update (T2 build-out, PR #7 and PR #8):** this note
+originally said only 5 of 14 tools were fully implemented and listed
+`kt_list_tracks`, `kt_get_track`, `kt_get_next_steps`, and
+`kt_render_roadmap` among the unimplemented ones — all four have since
+shipped (PR #7: `kt_list_tracks`/`kt_get_track`; PR #8, this PR's own
+predecessor slice: `kt_get_next_steps`/`kt_render_roadmap`). As of this
+branch, 9 of 14 tools have the full implementation this Track calls for:
+the original 5 (`kt_register_project` `T2.2`, `kt_create_track` `T2.3`,
+`kt_create_item` `T2.4`, `kt_get_project_status` `T2.7`,
+`kt_record_session_summary` `T2.9`) plus `kt_list_tracks` (`T2.5`),
+`kt_get_track` (`T2.6`), `kt_get_next_steps`, and `kt_render_roadmap`
+(`T2.12`). The remaining 5 are registered as stubs
 (`src/mcp/tools/stubs.ts`: correct request/response shape, no real
 logic, no external calls) rather than the tools this Track's items
-describe:
-- **`T2.5` (`kt_list_tracks`), `T2.6` (`kt_get_track`), `T2.8`
-  (`kt_update_item_status`), `T2.10` (`kt_record_decision`), `T2.12`
-  (`kt_render_roadmap`), and the `kt_get_next_steps` read query above** —
-  this Track's acceptance criteria call for all six to be **fully**
-  implemented (not stubs). None currently is. This is the gap behind the
-  "old model path" flag and the PR #1 CodeRabbit deferrals recorded in
-  this doc's backlog section — it was never previously written down in
-  one place that six specific tools are behind this Track's own stated
-  scope, not merely "not yet built" in the abstract.
+describe — `kt_update_item_status` (`T2.8`) and `kt_record_decision`
+(`T2.10`) are the subject of a sibling PR not yet merged as of this
+branch; `kt_check_drift` (`T2.11`/`T6`) and the two sync tools (`T2.13`,
+`T2.14`) are out of T2 scope entirely (T5/T6). The rest of this note
+below is preserved as originally written (a point-in-time record of what
+the gap looked like when first written down), except where a later
+edit is explicitly marked:
+- **`T2.8` (`kt_update_item_status`) and `T2.10` (`kt_record_decision`)
+  remain stubs as of this branch** (see the sibling-PR note just above);
+  this Track's acceptance criteria call for both to be **fully**
+  implemented. This is the gap behind the "old model path" flag and the
+  PR #1 CodeRabbit deferrals recorded in this doc's backlog section — it
+  was never previously written down in one place that these tools were
+  behind this Track's own stated scope, not merely "not yet built" in
+  the abstract.
 - **`T2.9` (`kt_record_session_summary`)** exceeds its own acceptance
   criterion, but not by fully doing `T6.1`'s job. The `T2.9` criterion
   asks only for an `events` insert "with no drift analysis performed
@@ -223,14 +235,15 @@ describe:
   how `T6.1` gets reconciled. `T2.11` (`kt_check_drift`) and the two
   sync stubs (`T2.13`, `T2.14`) do **not** actually match their
   stub-only acceptance criteria either, on closer check:
-  `registerStubTools` routes every one of the 9 stub tools through the
+  `registerStubTools` routes every remaining stub tool through the
   same generic `notImplementedResult` (`src/mcp/tool-helpers.ts`), which
   always returns a uniform `500 INTERNAL_ERROR` — not `T2.11`'s specific
   "empty result with a `no heuristics configured` note", and not
   `T2.13`/`T2.14`'s specific "adapter not configured" result after
   validating the item exists. The generic-500 stub shape is the same for
-  all 9 unimplemented tools; none of the three has the bespoke
-  stub-response behavior its own T2 line calls for.
+  every unimplemented tool (5 as of this branch — see the "Update" note
+  above; originally 9 when this paragraph was first written); none of the
+  three has the bespoke stub-response behavior its own T2 line calls for.
 - Nothing in `T1.6`'s "cross-document consistency... zero open
   discrepancies" gate accounted for this Track-vs-build gap either — it
   checks the docs against each other, not the docs against what actually

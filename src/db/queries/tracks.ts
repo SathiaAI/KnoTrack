@@ -44,6 +44,11 @@ export interface TrackSummary {
   id: string;
   title: string;
   status: TrackStatus;
+  /** Used by render-roadmap.ts to derive a deterministic "Generated at"
+   * timestamp (TRD TEST_CASES.md ROAD-09: two calls with no DB changes
+   * must return byte-identical content) — a live `new Date()` at render
+   * time would fail that on the very next call. */
+  updated_at: Date;
 }
 
 /** Every track's {id, title, status} for a project, ordered by
@@ -59,7 +64,7 @@ export async function getTrackSummariesForProject(
   projectId: string,
 ): Promise<TrackSummary[]> {
   const result = await db.query<TrackSummary>(
-    `SELECT id, title, status FROM tracks WHERE project_id = $1 ORDER BY created_at ASC`,
+    `SELECT id, title, status, updated_at FROM tracks WHERE project_id = $1 ORDER BY created_at ASC`,
     [projectId],
   );
   return result.rows;

@@ -97,12 +97,13 @@ export function renderMermaidRoadmap(tracks: RoadmapTrack[], edges: RoadmapEdge[
 }
 
 /**
- * Builds the §6.3 truncation notice from whichever clauses actually
- * apply, e.g. `showing 200 of 341 tracks` and/or `some tracks omit items
- * beyond the first 100`. The first clause continues the "Roadmap
- * truncated: ..." sentence lower-case; any further clause starts its own
- * capitalized sentence — matching TRD §6.3's example exactly when both
- * clauses apply:
+ * Builds the §6.3 truncation notice text (without any format-specific
+ * comment/quote prefix — see `appendTruncationNotice`) from whichever
+ * clauses actually apply, e.g. `showing 200 of 341 tracks` and/or `some
+ * tracks omit items beyond the first 100`. The first clause continues
+ * the "Roadmap truncated: ..." sentence lower-case; any further clause
+ * starts its own capitalized sentence — matching TRD §6.3's markdown
+ * example exactly when both clauses apply:
  *   > Roadmap truncated: showing 200 of 341 tracks. Some tracks omit
  *   items beyond the first 100.
  */
@@ -110,14 +111,29 @@ export function buildTruncationNotice(clauses: string[]): string {
   const sentenceParts = clauses.map((clause, index) =>
     index === 0 ? clause : clause.charAt(0).toUpperCase() + clause.slice(1),
   );
-  return `> Roadmap truncated: ${sentenceParts.join('. ')}.`;
+  return `Roadmap truncated: ${sentenceParts.join('. ')}.`;
 }
 
-/** Appends a truncation notice as trailing line(s) inside `content` —
- * the tool's only output field is `content` (a single string), so §6.3's
+/**
+ * Appends a truncation notice as trailing line(s) inside `content` — the
+ * tool's only output field is `content` (a single string), so §6.3's
  * truncation signal has to be communicated inline rather than as a
- * separate field. */
-export function appendTruncationNotice(content: string, notice: string): string {
+ * separate field, and the prefix must be valid syntax for whichever
+ * format was requested:
+ *
+ * - `markdown`: a `>` blockquote line, per TRD §6.3's literal example.
+ * - `mermaid`: a `%%` comment line — a bare blockquote line is not valid
+ *   Mermaid syntax and breaks parsing (adversarial-review finding,
+ *   confirmed via CodeRabbit's own research into Mermaid's grammar): the
+ *   one case §6.3 calls "degrade gracefully" would otherwise return
+ *   content the requested renderer can't parse at all.
+ */
+export function appendTruncationNotice(
+  content: string,
+  notice: string,
+  format: 'markdown' | 'mermaid',
+): string {
   const withoutTrailingNewline = content.endsWith('\n') ? content : `${content}\n`;
-  return `${withoutTrailingNewline}\n${notice}\n`;
+  const prefixed = format === 'mermaid' ? `%% ${notice}` : `> ${notice}`;
+  return `${withoutTrailingNewline}\n${prefixed}\n`;
 }

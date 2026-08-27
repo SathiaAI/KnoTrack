@@ -224,6 +224,85 @@ describe('kt_render_roadmap', () => {
     expect(result.content).not.toContain('of 1 tracks');
   });
 
+  it('positive: mermaid truncation notice is a %% comment, not a markdown blockquote (valid Mermaid syntax)', async () => {
+    const projectId = await makeProject();
+    for (let i = 0; i < 3; i++) {
+      await pool.query(
+        `INSERT INTO tracks (project_id, title, status) VALUES ($1, $2, 'on_track')`,
+        [projectId, `Track ${i}`],
+      );
+    }
+
+    const smallCapConfig = { ...config, roadmapTrackCap: 2 };
+    const result = await renderRoadmapService(pool, smallCapConfig, {
+      project_id: projectId,
+      format: 'mermaid',
+    });
+
+    expect(result.content).toContain('%% Roadmap truncated: showing 2 of 3 tracks.');
+    expect(result.content).not.toContain('> Roadmap truncated');
+  });
+
+  it('positive: two consecutive calls with no DB changes return byte-identical content (ROAD-09)', async () => {
+    const projectId = await makeProject();
+    const track = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: track.track_id,
+      title: 'Item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+
+    const first = await renderRoadmapService(pool, config, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+    const second = await renderRoadmapService(pool, config, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+
+    expect(second.content).toBe(first.content);
+  });
+
+  it('positive: re-rendering after a new item is created changes content only where the DB changed (ROAD-08)', async () => {
+    const projectId = await makeProject();
+    const track = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+
+    const baseline = await renderRoadmapService(pool, config, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+
+    await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: track.track_id,
+      title: 'New item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+
+    const after = await renderRoadmapService(pool, config, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+
+    expect(after.content).not.toBe(baseline.content);
+    expect(after.content).toContain('- [ ] New item');
+    expect(after.content).toContain('## T — on_track');
+  });
+
   it('positive: no truncation notice appended when the project is within every cap', async () => {
     const projectId = await makeProject();
     await createTrackService(pool, config, {
@@ -239,6 +318,18 @@ describe('kt_render_roadmap', () => {
     });
 
     expect(result.content).not.toContain('Roadmap truncated');
+  });
+
+  it('positive: a project with zero tracks renders a header-only roadmap using the project row for the timestamp fallback', async () => {
+    const projectId = await makeProject();
+
+    const result = await renderRoadmapService(pool, config, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+
+    expect(result.content).toMatch(/^# Roadmap: KnoTrack Demo\n_Generated \d{4}-\d{2}-\d{2}T/);
+    expect(result.content).not.toContain('##');
   });
 
   it('negative: 404 when project does not exist', async () => {

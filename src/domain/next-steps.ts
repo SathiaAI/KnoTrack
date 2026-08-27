@@ -76,7 +76,17 @@ export function rankNextSteps(
     if (a.sequence_position !== b.sequence_position) {
       return a.sequence_position - b.sequence_position;
     }
-    return a.created_at.getTime() - b.created_at.getTime();
+    if (a.created_at.getTime() !== b.created_at.getTime()) {
+      return a.created_at.getTime() - b.created_at.getTime();
+    }
+    // adversarial-review P2: track priority, sequence_position, and
+    // created_at can all tie (e.g. two items created in the same
+    // millisecond), and the caller's query defines no row order beyond
+    // that — without a final deterministic key, JS's stable sort would
+    // just preserve whatever order Postgres happened to return the rows
+    // in, which isn't guaranteed stable across calls. `id` is unique, so
+    // this always fully resolves the ordering.
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 
   return survivors.slice(0, limit).map((item) => {

@@ -178,23 +178,27 @@ export async function listPendingItemsForProject(
   return result.rows;
 }
 
-/** Status of every item in a project (regardless of that item's own
- * status), keyed by id — used to check whether a pending item's
- * dependencies are all `done` (kt_get_next_steps, TRD §3.8 step 2)
- * without a per-item second query. Fetching the whole project's items
- * once and passing the resulting map into the pure domain function is
- * simplest here; unlike drift-scan/roadmap, the TRD sets no cap for
- * kt_get_next_steps. */
-export async function getItemStatusesForProject(
+/** Status of a specific set of items, keyed by id — used by
+ * kt_get_next_steps (TRD §3.8 step 2) to check whether a pending item's
+ * dependencies are all `done`. Scoped to exactly the ids the caller
+ * already knows it needs (the dependency ids referenced by the project's
+ * pending items) rather than every item in the project: an earlier
+ * version of this query loaded the whole project's item statuses
+ * regardless of size (adversarial-review P2 — a project with a large
+ * item history, most of it `done` and irrelevant to this check, paid for
+ * all of it on every call to a tool whose own output is capped at
+ * `nextStepsLimit`, default 5). `ids` is expected de-duplicated by the
+ * caller; an empty array short-circuits to an empty map without a
+ * round-trip, since `= ANY('{}'::uuid[])` would otherwise still work but
+ * there's no reason to ask. */
+export async function getItemStatusesByIds(
   db: Queryable,
-  projectId: string,
+  ids: string[],
 ): Promise<Map<string, ItemStatus>> {
+  if (ids.length === 0) return new Map();
   const result = await db.query<{ id: string; status: ItemStatus }>(
-    `SELECT i.id, i.status
-     FROM items i
-     JOIN tracks t ON t.id = i.track_id
-     WHERE t.project_id = $1`,
-    [projectId],
+    `SELECT id, status FROM items WHERE id = ANY($1::uuid[])`,
+    [ids],
   );
   return new Map(result.rows.map((row) => [row.id, row.status]));
 }

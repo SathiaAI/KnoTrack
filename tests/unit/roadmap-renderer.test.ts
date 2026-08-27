@@ -164,31 +164,42 @@ describe('renderMermaidRoadmap', () => {
 });
 
 describe('buildTruncationNotice', () => {
-  it("matches TRD §6.3's example exactly when both clauses apply", () => {
+  it("matches TRD §6.3's example text exactly when both clauses apply (format prefix is appendTruncationNotice's job)", () => {
     const notice = buildTruncationNotice([
       'showing 200 of 341 tracks',
       'some tracks omit items beyond the first 100',
     ]);
     expect(notice).toBe(
-      '> Roadmap truncated: showing 200 of 341 tracks. Some tracks omit items beyond the first 100.',
+      'Roadmap truncated: showing 200 of 341 tracks. Some tracks omit items beyond the first 100.',
     );
   });
 
   it('renders a single clause without a spurious second sentence', () => {
     expect(buildTruncationNotice(['showing 5 of 10 tracks'])).toBe(
-      '> Roadmap truncated: showing 5 of 10 tracks.',
+      'Roadmap truncated: showing 5 of 10 tracks.',
     );
   });
 });
 
 describe('appendTruncationNotice', () => {
-  it('appends the notice as trailing lines, preserving the original content', () => {
+  it('appends a markdown blockquote notice as trailing lines, preserving the original content', () => {
     const content = '# Roadmap: P\n_Generated x_\n\n## T — on_track\n- [ ] item\n';
-    const notice = '> Roadmap truncated: showing 1 of 2 tracks.';
+    const notice = 'Roadmap truncated: showing 1 of 2 tracks.';
 
-    const result = appendTruncationNotice(content, notice);
+    const result = appendTruncationNotice(content, notice, 'markdown');
 
     expect(result.startsWith(content)).toBe(true);
-    expect(result.endsWith(`${notice}\n`)).toBe(true);
+    expect(result.endsWith(`> ${notice}\n`)).toBe(true);
+  });
+
+  it('appends a mermaid %% comment notice, not a markdown blockquote, so the diagram stays parseable', () => {
+    const content = 'graph TD\n  t_1["A (on_track)"]\n';
+    const notice = 'Roadmap truncated: showing 1 of 2 tracks.';
+
+    const result = appendTruncationNotice(content, notice, 'mermaid');
+
+    expect(result.startsWith(content)).toBe(true);
+    expect(result.endsWith(`%% ${notice}\n`)).toBe(true);
+    expect(result).not.toContain('> Roadmap truncated');
   });
 });

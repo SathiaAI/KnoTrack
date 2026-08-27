@@ -128,6 +128,21 @@ describe('rankNextSteps', () => {
     expect(result.map((r) => r.item_id)).toEqual(['earlier', 'later']);
   });
 
+  it('breaks a full tie (same track priority, sequence_position, and created_at) by item id', () => {
+    const tracksById = new Map([['t1', { title: 'T', status: 'on_track' }]]);
+    const sameTimestamp = new Date('2026-01-01T00:00:00.000Z');
+    const result = rankNextSteps(
+      [
+        item({ id: 'b', track_id: 't1', sequence_position: 1, created_at: sameTimestamp }),
+        item({ id: 'a', track_id: 't1', sequence_position: 1, created_at: sameTimestamp }),
+      ],
+      tracksById,
+      new Map(),
+      5,
+    );
+    expect(result.map((r) => r.item_id)).toEqual(['a', 'b']);
+  });
+
   it('caps the result at the given limit', () => {
     const tracksById = new Map([['t1', { title: 'T', status: 'on_track' }]]);
     const items = [1, 2, 3, 4, 5, 6].map((n) =>
