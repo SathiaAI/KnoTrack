@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasCycle, wouldCreateCycle } from '../../src/domain/dependency-graph.js';
+import { hasCycle, wouldCreateCycle, topoSort } from '../../src/domain/dependency-graph.js';
 
 describe('hasCycle', () => {
   it('returns false for an empty graph', () => {
@@ -63,5 +63,58 @@ describe('wouldCreateCycle', () => {
       { from: 'Y', to: 'X' },
     ];
     expect(wouldCreateCycle(existingCyclic, 'NEW', [])).toBe(true);
+  });
+});
+
+describe('topoSort', () => {
+  it('returns an empty array for an empty node set', () => {
+    expect(topoSort([], [])).toEqual([]);
+  });
+
+  it('returns nodes with no edges in their input order', () => {
+    expect(topoSort(['B', 'A'], [])).toEqual(['B', 'A']);
+  });
+
+  it('orders a simple chain prerequisite-first (A depends on B depends on C)', () => {
+    // A -> B -> C means "A depends on B, B depends on C"; C has no
+    // prerequisites so it must render first, A depends transitively on
+    // both so it must render last.
+    const edges = [
+      { from: 'A', to: 'B' },
+      { from: 'B', to: 'C' },
+    ];
+    expect(topoSort(['A', 'B', 'C'], edges)).toEqual(['C', 'B', 'A']);
+  });
+
+  it('orders a diamond so both mid-tier nodes follow the shared prerequisite, ties broken by input order', () => {
+    // A depends on B and C; both B and C depend on D.
+    const edges = [
+      { from: 'A', to: 'B' },
+      { from: 'A', to: 'C' },
+      { from: 'B', to: 'D' },
+      { from: 'C', to: 'D' },
+    ];
+    expect(topoSort(['A', 'B', 'C', 'D'], edges)).toEqual(['D', 'B', 'C', 'A']);
+  });
+
+  it('breaks ties among simultaneously-eligible nodes using the input array order', () => {
+    // Three independent nodes, no edges at all: every node is eligible
+    // from the start, so the result should exactly match input order.
+    expect(topoSort(['Z', 'Y', 'X'], [])).toEqual(['Z', 'Y', 'X']);
+  });
+
+  it('falls back to appending leftover nodes in input order when a cycle is present', () => {
+    // A <-> B is a cycle; C is independent and has no prerequisites, so
+    // it's still emitted normally before the cycle-fallback kicks in.
+    const edges = [
+      { from: 'A', to: 'B' },
+      { from: 'B', to: 'A' },
+    ];
+    expect(topoSort(['A', 'B', 'C'], edges)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('ignores edges referencing a node outside the given node set', () => {
+    const edges = [{ from: 'A', to: 'GHOST' }];
+    expect(topoSort(['A'], edges)).toEqual(['A']);
   });
 });

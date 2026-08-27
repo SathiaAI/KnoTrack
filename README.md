@@ -46,11 +46,11 @@ include full diffs and raw model output.
 | `kt_record_session_summary` | implemented | Record a session's summary and re-check for drift                      |
 | `kt_list_tracks`            | implemented | List a project's tracks, optionally filtered by status                 |
 | `kt_get_track`              | implemented | Track detail: items plus dependency graph                              |
-| `kt_get_next_steps`         | planned     | Suggested next items given current status and dependencies             |
-| `kt_record_decision`        | implemented | Record a decision and the context behind it                            |
-| `kt_update_item_status`     | implemented | Move an item's status forward (or flag it blocked)                     |
+| `kt_get_next_steps`         | implemented | Suggested next items given current status and dependencies             |
+| `kt_record_decision`        | planned     | Record a decision and the context behind it                            |
+| `kt_update_item_status`     | planned     | Move an item's status forward (or flag it blocked)                     |
 | `kt_check_drift`            | planned     | On-demand drift scan across a project                                  |
-| `kt_render_roadmap`         | planned     | Render a roadmap view from tracked items                               |
+| `kt_render_roadmap`         | implemented | Render a roadmap view from tracked items                               |
 | `kt_sync_to_github`         | planned     | One-way sync of tracked items to GitHub Issues                         |
 | `kt_sync_to_linear`         | planned     | One-way sync of tracked items to Linear                                |
 

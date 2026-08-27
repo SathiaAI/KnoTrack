@@ -126,95 +126,79 @@ export async function listItemsByTrack(db: Queryable, trackId: string): Promise<
   return result.rows;
 }
 
-/** kt_update_item_status (TRD §3.11): find one item scoped to its
- * project, distinguishing "doesn't exist at all" from "exists but a
- * different project" (404 either way, per TRD) the same way
- * findTrackById (tracks.ts) scopes tracks by project. Items don't carry
- * `project_id` directly, so this joins through the owning track.
- *
- * Locks the item row (`FOR UPDATE`) — adversarial-review P2: the
- * `done -> done` no-op exemption reads this row's *current* status to
- * decide whether to run the unmet-dependency check at all. Without a
- * lock here, two concurrent kt_update_item_status calls on the same item
- * can both read the same pre-transition status: e.g. call A reads
- * `done`, call B concurrently transitions the item to `pending` (leaving
- * an unmet dependency reopened) and commits, then call A — having
- * already decided from its earlier read that this is a `done -> done`
- * no-op — writes `done` again without ever running the check, silently
- * performing what is actually a `pending -> done` transition that should
- * have been rejected. Locking the row here forces a concurrent status
- * change to wait until this transaction commits or rolls back, so the
- * two calls serialize instead of racing. Must be called inside the same
- * transaction as the eventual status UPDATE — a bare Pool would release
- * the lock immediately, which is why this takes a PoolClient, not the
- * shared Queryable type. */
-export async function findItemInProject(
-  db: PoolClient,
-  projectId: string,
-  itemId: string,
-): Promise<ItemRow | null> {
+/** Items for one track, capped and ordered by sequence_position — used by
+ * kt_render_roadmap (TRD §6.3) so a track holding more than
+ * KNOTRACK_ROADMAP_ITEM_PER_TRACK_CAP items doesn't blow past the render
+ * budget. Callers pass `limit = cap + 1` to detect "more exist beyond the
+ * cap" from the result's length without a separate COUNT query. Kept
+ * separate from the uncapped listItemsByTrack, which kt_get_track relies
+ * on returning every item unconditionally. */
+export async function listItemsByTrackCapped(
+  db: Queryable,
+  trackId: string,
+  limit: number,
+): Promise<ItemRow[]> {
   const result = await db.query<ItemRow>(
-    `SELECT i.*
+    `SELECT * FROM items WHERE track_id = $1 ORDER BY sequence_position ASC LIMIT $2`,
+    [trackId, limit],
+  );
+  return result.rows;
+}
+
+export interface PendingItemWithDeps {
+  id: string;
+  track_id: string;
+  title: string;
+  sequence_position: number;
+  created_at: Date;
+  depends_on_item_ids: string[];
+}
+
+/** Every pending item across a project's tracks, with each item's own
+ * depends_on_item_ids inlined via a correlated array_agg subquery — same
+ * pattern as tracks.ts's listTracksForListing. Feeds kt_get_next_steps's
+ * pure ranking function (src/domain/next-steps.ts, TRD §3.8 steps 1-2). */
+export async function listPendingItemsForProject(
+  db: Queryable,
+  projectId: string,
+): Promise<PendingItemWithDeps[]> {
+  const result = await db.query<PendingItemWithDeps>(
+    `SELECT
+       i.id, i.track_id, i.title, i.sequence_position, i.created_at,
+       COALESCE(
+         (SELECT array_agg(dep.depends_on_item_id ORDER BY dep.depends_on_item_id)
+          FROM item_dependencies dep WHERE dep.item_id = i.id),
+         ARRAY[]::uuid[]
+       ) AS depends_on_item_ids
      FROM items i
      JOIN tracks t ON t.id = i.track_id
-     WHERE i.id = $1 AND t.project_id = $2
-     FOR UPDATE OF i`,
-    [itemId, projectId],
+     WHERE t.project_id = $1 AND i.status = 'pending'`,
+    [projectId],
   );
-  return result.rows[0] ?? null;
+  return result.rows;
 }
 
-/**
- * The ids of `itemId`'s dependencies (via item_dependencies) whose status
- * is not currently 'done' — the unmet set kt_update_item_status's
- * transition-to-done check needs (TRD §3.11).
- *
- * Locks each dependency's item row (`FOR UPDATE OF dep`) while reading.
- * This is a read-then-write, same shape as the race
- * lockTrackForSequenceAssignment (above) guards against for
- * sequence_position: the caller is about to decide, based on this read,
- * whether to write `status = 'done'` on `itemId`. Without the lock, a
- * concurrent kt_update_item_status call moving one of these dependencies
- * *off* 'done' could commit in the gap between this read and that write,
- * letting `itemId` be marked done against a dependency that is no longer
- * done by the time either transaction settles. Locking the dependency
- * rows here forces that concurrent call to wait until this transaction
- * commits or rolls back, so the two calls serialize instead of racing.
- * Must be called inside the same transaction as the eventual status
- * UPDATE — a bare Pool would release the lock immediately, which is why
- * this takes a PoolClient, not the shared Queryable type.
- *
- * `ORDER BY dep.id` before locking (adversarial-review P2): two items
- * with overlapping but oppositely-ordered dependency sets (e.g. one
- * depends on [X, Y], another on [Y, X]) being marked done concurrently
- * would otherwise lock their shared dependency rows in whatever order
- * Postgres happens to return them — different orders let one transaction
- * hold X while waiting for Y and the other hold Y while waiting for X,
- * which Postgres resolves by aborting one with a deadlock error (surfaced
- * by `runTool` as an opaque 500 instead of the tool's own documented
- * error shapes). Every caller locking these rows in the same
- * (id-ascending) order removes the possibility of a lock cycle entirely.
- */
-export async function getUnmetDependencyIds(db: PoolClient, itemId: string): Promise<string[]> {
-  const result = await db.query<{ id: string; status: ItemStatus }>(
-    `SELECT dep.id, dep.status
-     FROM item_dependencies idep
-     JOIN items dep ON dep.id = idep.depends_on_item_id
-     WHERE idep.item_id = $1
-     ORDER BY dep.id
-     FOR UPDATE OF dep`,
-    [itemId],
-  );
-  return result.rows.filter((row) => row.status !== 'done').map((row) => row.id);
-}
-
-/** kt_update_item_status (TRD §3.11). No `updated_at` here —
- * `trg_items_set_updated_at` (migrations/001_init.sql) already bumps it
- * on every UPDATE. */
-export async function updateItemStatus(
+/** Status of a specific set of items, keyed by id — used by
+ * kt_get_next_steps (TRD §3.8 step 2) to check whether a pending item's
+ * dependencies are all `done`. Scoped to exactly the ids the caller
+ * already knows it needs (the dependency ids referenced by the project's
+ * pending items) rather than every item in the project: an earlier
+ * version of this query loaded the whole project's item statuses
+ * regardless of size (adversarial-review P2 — a project with a large
+ * item history, most of it `done` and irrelevant to this check, paid for
+ * all of it on every call to a tool whose own output is capped at
+ * `nextStepsLimit`, default 5). `ids` is expected de-duplicated by the
+ * caller; an empty array short-circuits to an empty map without a
+ * round-trip, since `= ANY('{}'::uuid[])` would otherwise still work but
+ * there's no reason to ask. */
+export async function getItemStatusesByIds(
   db: Queryable,
-  itemId: string,
-  status: ItemStatus,
-): Promise<void> {
-  await db.query(`UPDATE items SET status = $1 WHERE id = $2`, [status, itemId]);
+  ids: string[],
+): Promise<Map<string, ItemStatus>> {
+  if (ids.length === 0) return new Map();
+  const result = await db.query<{ id: string; status: ItemStatus }>(
+    `SELECT id, status FROM items WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return new Map(result.rows.map((row) => [row.id, row.status]));
 }
