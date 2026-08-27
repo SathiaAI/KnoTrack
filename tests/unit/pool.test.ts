@@ -16,6 +16,7 @@ describe('createPool TLS config (TRD §... / adversarial-review security-2)', ()
     host: '0.0.0.0',
     databaseSslMode: 'require',
     dbSslRejectUnauthorized: true,
+    dbSslCa: undefined,
     dbStatementTimeoutMs: 30000,
     dbPoolMax: 10,
     driftScanTrackCap: 500,
@@ -52,5 +53,38 @@ describe('createPool TLS config (TRD §... / adversarial-review security-2)', ()
     const pool = createPool({ ...baseConfig, dbStatementTimeoutMs: 12345 });
     expect(pool.options.statement_timeout).toBe(12345);
     void pool.end();
+  });
+
+  // Railway's postgres-ssl image presents a self-signed cert even on its
+  // private network — KNOTRACK_DB_SSL_CA_BASE64 pins and verifies against
+  // it specifically, instead of falling back to
+  // dbSslRejectUnauthorized: false (encrypted but unauthenticated).
+  describe('CA pinning (KNOTRACK_DB_SSL_CA_BASE64 / Railway self-signed Postgres)', () => {
+    const FAKE_CA_PEM = '-----BEGIN CERTIFICATE-----\nfakecertdata\n-----END CERTIFICATE-----\n';
+
+    it('verifies against the pinned CA when one is configured', () => {
+      const pool = createPool({ ...baseConfig, dbSslCa: FAKE_CA_PEM });
+      expect(pool.options.ssl).toEqual({ ca: FAKE_CA_PEM, rejectUnauthorized: true });
+      void pool.end();
+    });
+
+    it('always verifies when a CA is pinned, even if dbSslRejectUnauthorized is false', () => {
+      // Pinning a specific certificate and then disabling verification
+      // would silently defeat the point of pinning it — the pinned CA
+      // must win regardless of this flag.
+      const pool = createPool({
+        ...baseConfig,
+        dbSslCa: FAKE_CA_PEM,
+        dbSslRejectUnauthorized: false,
+      });
+      expect(pool.options.ssl).toEqual({ ca: FAKE_CA_PEM, rejectUnauthorized: true });
+      void pool.end();
+    });
+
+    it('sets no ca option when dbSslCa is unset, falling back to dbSslRejectUnauthorized', () => {
+      const pool = createPool({ ...baseConfig, dbSslCa: undefined });
+      expect(pool.options.ssl).toEqual({ rejectUnauthorized: true });
+      void pool.end();
+    });
   });
 });

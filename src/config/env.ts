@@ -42,6 +42,31 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Base64-encoded PEM certificate for a managed Postgres that presents a
+  // self-signed cert even on its private/internal network (Railway's
+  // postgres-ssl image is the motivating case). When set, the pool trusts
+  // exactly this certificate and always verifies against it — a real fix
+  // for the MITM gap KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false leaves open,
+  // rather than disabling verification. Optional: every other deploy
+  // target (Supabase, Fly.io, local dev) has no reason to set this.
+  KNOTRACK_DB_SSL_CA_BASE64: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.length > 0 ? value : undefined))
+    .refine(
+      (value) => {
+        if (value === undefined) return true;
+        // Node's Buffer.from(str, 'base64') silently drops characters
+        // outside the base64 alphabet instead of throwing, so garbage
+        // input would otherwise decode "successfully" into nonsense bytes
+        // — a strict pattern match is the only thing that actually
+        // rejects a malformed value. Expects unwrapped (single-line)
+        // base64, e.g. `base64 -w0` / `openssl base64 -A` output.
+        const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+        return STRICT_BASE64.test(value) && Buffer.from(value, 'base64').length > 0;
+      },
+      { message: 'KNOTRACK_DB_SSL_CA_BASE64 must be valid, unwrapped (single-line) base64' },
+    ),
   KNOTRACK_DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   KNOTRACK_DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   KNOTRACK_DRIFT_SCAN_TRACK_CAP: z.coerce.number().int().positive().default(500),
@@ -65,6 +90,7 @@ export type Config = {
   host: string;
   databaseSslMode: 'require' | 'disable';
   dbSslRejectUnauthorized: boolean;
+  dbSslCa: string | undefined;
   dbStatementTimeoutMs: number;
   dbPoolMax: number;
   driftScanTrackCap: number;
@@ -101,6 +127,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: data.HOST,
     databaseSslMode,
     dbSslRejectUnauthorized: data.KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED,
+    dbSslCa: data.KNOTRACK_DB_SSL_CA_BASE64
+      ? Buffer.from(data.KNOTRACK_DB_SSL_CA_BASE64, 'base64').toString('utf8')
+      : undefined,
     dbStatementTimeoutMs: data.KNOTRACK_DB_STATEMENT_TIMEOUT_MS,
     dbPoolMax: data.KNOTRACK_DB_POOL_MAX,
     driftScanTrackCap: data.KNOTRACK_DRIFT_SCAN_TRACK_CAP,

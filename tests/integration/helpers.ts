@@ -25,6 +25,7 @@ export function getTestConfig(): Config {
     host: '127.0.0.1',
     databaseSslMode: 'disable',
     dbSslRejectUnauthorized: true,
+    dbSslCa: undefined,
     dbStatementTimeoutMs: 30000,
     dbPoolMax: 5,
     driftScanTrackCap: 500,

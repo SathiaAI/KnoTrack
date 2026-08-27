@@ -158,9 +158,21 @@ async function main(): Promise<void> {
   // KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false opts out, for a broken/
   // self-signed local dev certificate.
   const sslRejectUnauthorized = process.env.KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED !== 'false';
+  // Same CA-pinning support as src/db/pool.ts (docs/TRD.md §7,
+  // KNOTRACK_DB_SSL_CA_BASE64) — this script deliberately doesn't go
+  // through loadConfig()/createPool() (a migration run shouldn't have to
+  // supply KNOTRACK_API_TOKENS/KNOTRACK_ENCRYPTION_KEY just to connect),
+  // so the same CA-pinning logic is duplicated here rather than shared.
+  const sslCaBase64 = process.env.KNOTRACK_DB_SSL_CA_BASE64;
+  const sslCa = sslCaBase64 ? Buffer.from(sslCaBase64, 'base64').toString('utf8') : undefined;
   const client = new Client({
     connectionString: databaseUrl,
-    ssl: sslMode === 'require' ? { rejectUnauthorized: sslRejectUnauthorized } : undefined,
+    ssl:
+      sslMode === 'require'
+        ? sslCa
+          ? { ca: sslCa, rejectUnauthorized: true }
+          : { rejectUnauthorized: sslRejectUnauthorized }
+        : undefined,
   });
   await client.connect();
 

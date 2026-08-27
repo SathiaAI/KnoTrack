@@ -17,12 +17,25 @@ export function createPool(config: Config, overrides: Partial<PoolConfig> = {}):
     ...overrides,
   };
   if (config.databaseSslMode === 'require') {
-    // rejectUnauthorized defaults to true (verify the server's TLS cert
-    // against trusted CAs) — only KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false
-    // disables it, for a broken/self-signed local dev certificate. Never
-    // hardcode this to false: doing so keeps the channel encrypted but
-    // accepts any certificate, which is silently vulnerable to MITM.
-    poolConfig.ssl = { rejectUnauthorized: config.dbSslRejectUnauthorized };
+    if (config.dbSslCa) {
+      // A pinned CA (KNOTRACK_DB_SSL_CA_BASE64) means "verify against
+      // exactly this certificate" — always rejectUnauthorized: true here,
+      // regardless of dbSslRejectUnauthorized, since supplying a specific
+      // trusted cert and then disabling verification would silently
+      // defeat the point of pinning it. This is the real fix for managed
+      // Postgres that presents a self-signed cert even on its private
+      // network (Railway's postgres-ssl image): encrypted *and* verified,
+      // instead of the MITM-vulnerable "encrypted but unverified" fallback
+      // below.
+      poolConfig.ssl = { ca: config.dbSslCa, rejectUnauthorized: true };
+    } else {
+      // rejectUnauthorized defaults to true (verify the server's TLS cert
+      // against trusted CAs) — only KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false
+      // disables it, for a broken/self-signed local dev certificate. Never
+      // hardcode this to false: doing so keeps the channel encrypted but
+      // accepts any certificate, which is silently vulnerable to MITM.
+      poolConfig.ssl = { rejectUnauthorized: config.dbSslRejectUnauthorized };
+    }
   }
   return new Pool(poolConfig);
 }
