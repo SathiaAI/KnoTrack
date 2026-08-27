@@ -52,19 +52,25 @@ export interface TrackSummary {
 }
 
 /** Every track's {id, title, status} for a project, ordered by
- * created_at ascending — this repo's existing default track ordering
- * (see listTracksWithItemCounts's `ORDER BY t.created_at ASC`). Used by
- * kt_get_next_steps (looking up each pending item's track) and
- * kt_render_roadmap (topoSort's tie-break input order). Kept separate
- * from getTrackStatusesForProject (status only, no title) rather than
- * changing that function's return shape, since get-project-status.ts and
- * others may rely on it staying status-only. */
+ * created_at ascending, then id ascending — this repo's existing default
+ * track ordering (see listTracksWithItemCounts's `ORDER BY
+ * t.created_at ASC`), with an `id` tie-break added (adversarial-review,
+ * PR #9's review of the main-merge commit): two tracks created within
+ * the same clock tick previously had no defined relative order, which
+ * kt_render_roadmap relies on being stable both for topoSort's tie-break
+ * input order and for ROAD-09's byte-identical-repeat-call contract.
+ * Used by kt_get_next_steps (looking up each pending item's track) and
+ * kt_render_roadmap. Kept separate from getTrackStatusesForProject
+ * (status only, no title) rather than changing that function's return
+ * shape, since get-project-status.ts and others may rely on it staying
+ * status-only. */
 export async function getTrackSummariesForProject(
   db: Queryable,
   projectId: string,
 ): Promise<TrackSummary[]> {
   const result = await db.query<TrackSummary>(
-    `SELECT id, title, status, updated_at FROM tracks WHERE project_id = $1 ORDER BY created_at ASC`,
+    `SELECT id, title, status, updated_at FROM tracks WHERE project_id = $1
+     ORDER BY created_at ASC, id ASC`,
     [projectId],
   );
   return result.rows;

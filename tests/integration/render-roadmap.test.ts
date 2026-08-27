@@ -271,6 +271,50 @@ describe('kt_render_roadmap', () => {
     expect(second.content).toBe(first.content);
   });
 
+  // CodeRabbit review (PR #9, review of the main-merge commit):
+  // getTrackSummariesForProject ordered only by created_at ASC, with no
+  // tie-break. Two tracks created within the same clock tick (their
+  // created_at timestamps forced identical here to make that
+  // deterministic rather than timing-dependent) had no defined relative
+  // order, which is exactly what ROAD-09 promises never happens — a
+  // repeated call could return the two tracks swapped without any DB
+  // change. Fixed by adding `id ASC` as a secondary sort key.
+  it('positive: two tracks with identical created_at still render in a stable, repeatable order (id tie-break)', async () => {
+    const projectId = await makeProject();
+    const trackA = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'Track A',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const trackB = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'Track B',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const tiedTimestamp = new Date('2026-01-01T00:00:00.000Z');
+    await pool.query(`UPDATE tracks SET created_at = $1 WHERE id = ANY($2::uuid[])`, [
+      tiedTimestamp,
+      [trackA.track_id, trackB.track_id],
+    ]);
+
+    const expectedOrder = [trackA.track_id, trackB.track_id].sort();
+    const expectedFirstTitle = expectedOrder[0] === trackA.track_id ? 'Track A' : 'Track B';
+    const expectedSecondTitle = expectedOrder[0] === trackA.track_id ? 'Track B' : 'Track A';
+
+    for (let i = 0; i < 3; i++) {
+      const result = await renderRoadmapService(pool, config, {
+        project_id: projectId,
+        format: 'markdown',
+      });
+      const firstIndex = result.content.indexOf(`## ${expectedFirstTitle} —`);
+      const secondIndex = result.content.indexOf(`## ${expectedSecondTitle} —`);
+      expect(firstIndex).toBeGreaterThanOrEqual(0);
+      expect(secondIndex).toBeGreaterThan(firstIndex);
+    }
+  });
+
   it('positive: re-rendering after a new item is created changes content only where the DB changed (ROAD-08)', async () => {
     const projectId = await makeProject();
     const track = await createTrackService(pool, config, {

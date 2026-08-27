@@ -183,35 +183,37 @@ than getting its own numbered item.
 
 **Status reconciliation (added retroactively — this Track's items above
 describe the plan, not yet what shipped at the time this note was
-written).** **Update (T2 build-out, PR #7 and PR #8):** this note
+written).** **Update (T2 build-out, PR #7, #8, and #9):** this note
 originally said only 5 of 14 tools were fully implemented and listed
 `kt_list_tracks`, `kt_get_track`, `kt_get_next_steps`, and
 `kt_render_roadmap` among the unimplemented ones — all four have since
-shipped (PR #7: `kt_list_tracks`/`kt_get_track`; PR #8, this PR's own
-predecessor slice: `kt_get_next_steps`/`kt_render_roadmap`). As of this
-branch, 9 of 14 tools have the full implementation this Track calls for:
-the original 5 (`kt_register_project` `T2.2`, `kt_create_track` `T2.3`,
-`kt_create_item` `T2.4`, `kt_get_project_status` `T2.7`,
-`kt_record_session_summary` `T2.9`) plus `kt_list_tracks` (`T2.5`),
-`kt_get_track` (`T2.6`), `kt_get_next_steps`, and `kt_render_roadmap`
-(`T2.12`). The remaining 5 are registered as stubs
-(`src/mcp/tools/stubs.ts`: correct request/response shape, no real
-logic, no external calls) rather than the tools this Track's items
-describe — `kt_update_item_status` (`T2.8`) and `kt_record_decision`
-(`T2.10`) are the subject of a sibling PR not yet merged as of this
-branch; `kt_check_drift` (`T2.11`/`T6`) and the two sync tools (`T2.13`,
-`T2.14`) are out of T2 scope entirely (T5/T6). The rest of this note
+shipped (PR #7: `kt_list_tracks`/`kt_get_track`; PR #8:
+`kt_get_next_steps`/`kt_render_roadmap`), and this branch (PR #9) itself
+implements the remaining two, `kt_update_item_status` and
+`kt_record_decision`. As of this branch, 11 of 14 tools have the full
+implementation this Track calls for: the original 5
+(`kt_register_project` `T2.2`, `kt_create_track` `T2.3`, `kt_create_item`
+`T2.4`, `kt_get_project_status` `T2.7`, `kt_record_session_summary`
+`T2.9`) plus `kt_list_tracks` (`T2.5`), `kt_get_track` (`T2.6`),
+`kt_get_next_steps`, `kt_render_roadmap` (`T2.12`),
+`kt_update_item_status` (`T2.8`), and `kt_record_decision` (`T2.10`).
+The remaining 3 are registered as stubs (`src/mcp/tools/stubs.ts`:
+correct request/response shape, no real logic, no external calls) and
+are all out of T2 scope entirely — `kt_check_drift` (`T2.11`/`T6`) and
+the two sync tools (`T2.13`, `T2.14`) (T5/T6). The rest of this note
 below is preserved as originally written (a point-in-time record of what
 the gap looked like when first written down), except where a later
 edit is explicitly marked:
 - **`T2.8` (`kt_update_item_status`) and `T2.10` (`kt_record_decision`)
-  remain stubs as of this branch** (see the sibling-PR note just above);
-  this Track's acceptance criteria call for both to be **fully**
-  implemented. This is the gap behind the "old model path" flag and the
-  PR #1 CodeRabbit deferrals recorded in this doc's backlog section — it
-  was never previously written down in one place that these tools were
-  behind this Track's own stated scope, not merely "not yet built" in
-  the abstract.
+  were stubs as of PR #7/#8 and are now fully implemented on this branch
+  (PR #9)** — the paragraph below describing them as stubs reflects that
+  earlier point in time, not this branch's current state; kept here
+  unedited as the point-in-time record the "Update" note above exists to
+  contextualize. This was the gap behind the "old model path" flag and
+  the PR #1 CodeRabbit deferrals recorded in this doc's backlog section —
+  it was never previously written down in one place that these tools
+  were behind this Track's own stated scope, not merely "not yet built"
+  in the abstract.
 - **`T2.9` (`kt_record_session_summary`)** exceeds its own acceptance
   criterion, but not by fully doing `T6.1`'s job. The `T2.9` criterion
   asks only for an `events` insert "with no drift analysis performed
@@ -241,7 +243,7 @@ edit is explicitly marked:
   "empty result with a `no heuristics configured` note", and not
   `T2.13`/`T2.14`'s specific "adapter not configured" result after
   validating the item exists. The generic-500 stub shape is the same for
-  every unimplemented tool (5 as of this branch — see the "Update" note
+  every unimplemented tool (3 as of this branch — see the "Update" note
   above; originally 9 when this paragraph was first written); none of the
   three has the bespoke stub-response behavior its own T2 line calls for.
 - Nothing in `T1.6`'s "cross-document consistency... zero open
@@ -793,16 +795,24 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
 - **`T2.5`(cont.)/`T2.12` — `kt_get_next_steps`/`kt_render_roadmap` implemented
   + tested (T2 build-out, second of 3 planned PRs, 2026-08-26).** Before
   this PR, 4 T2 tools remained (`kt_get_next_steps`, `kt_record_decision`,
-  `kt_update_item_status`, `kt_render_roadmap`). This PR ships these 2,
-  leaving 2 T2 tools (`kt_record_decision`, `kt_update_item_status`) plus
-  the same 3 stubs deliberately out of T2 scope (`kt_check_drift` → `T6`;
-  `kt_sync_to_github`/`kt_sync_to_linear` → `T5`) — 5 total still in
-  `stubs.ts` (down from 7 after PR #7, matching this build's running
-  count in `docs/TRD.md` §2 and `README.md`'s tool table).
+  `kt_update_item_status`, `kt_render_roadmap`). This PR ships these 2.
+  **Update (this branch, PR #9):** the "leaving 2 T2 tools" and "5 total
+  still in `stubs.ts`" counts below were accurate for PR #8 alone; this
+  branch (PR #9) ships the remaining 2 (`kt_record_decision`,
+  `kt_update_item_status`), leaving only the 3 tools deliberately out of
+  T2 scope (`kt_check_drift` → `T6`; `kt_sync_to_github`/
+  `kt_sync_to_linear` → `T5`) in `stubs.ts`. Preserved as originally
+  written below: leaving 2 T2 tools (`kt_record_decision`,
+  `kt_update_item_status`) plus the same 3 stubs deliberately out of T2
+  scope (`kt_check_drift` → `T6`; `kt_sync_to_github`/`kt_sync_to_linear`
+  → `T5`) — 5 total still in `stubs.ts` (down from 7 after PR #7,
+  matching this build's running count in `docs/TRD.md` §2 and
+  `README.md`'s tool table).
   `kt_get_next_steps`: new pure `rankNextSteps` (`src/domain/next-steps.ts`)
   implements TRD §3.8's steps 1-6 against three new/extended queries
   (`getTrackSummariesForProject` in `tracks.ts`; `listPendingItemsForProject`
-  and `getItemStatusesForProject` in `items.ts`) — no migration needed,
+  and `getItemStatusesByIds` — renamed from `getItemStatusesForProject`
+  during PR #8's own review round — in `items.ts`) — no migration needed,
   same schema. `kt_render_roadmap`: the harder of the two, needing new
   infrastructure neither prior T2 tool had — a `topoSort` (Kahn's
   algorithm over the reversed `track_dependencies` edge direction, added
@@ -825,8 +835,13 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   on a cloned test config. 26 new unit tests (`topoSort` cases added to
   the existing `dependency-graph.test.ts`; new `roadmap-renderer.test.ts`
   and `next-steps.test.ts`) plus 15 new integration tests
-  (`get-next-steps.test.ts`, `render-roadmap.test.ts`), full suite
-  149/149 passing. One judgment call worth recording: TRD §3.8's fixed
+  (`get-next-steps.test.ts`, `render-roadmap.test.ts`) at initial push,
+  full suite 149/149 passing; 10 more tests (a new
+  `tests/unit/render-roadmap-timeout.test.ts` plus additional cases in
+  `roadmap-renderer.test.ts`, `next-steps.test.ts`, and
+  `render-roadmap.test.ts`) were added during PR #8's own review-round
+  fix, bringing the final count to 51 new tests and full suite 159/159
+  passing. One judgment call worth recording: TRD §3.8's fixed
   reason-template prose is `"All {n} dependencies complete — ..."` (always
   plural "dependencies"), but its own worked example for `n = 1` shows
   singular "dependency" — the prose and the example disagree with each
