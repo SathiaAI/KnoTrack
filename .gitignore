@@ -6,3 +6,6 @@ coverage/
 .adversarial-review/
 .stryker-tmp/
 stryker-report.json
+
+# Claude Code session scratch (worktrees, local state) — never project content.
+.claude/
