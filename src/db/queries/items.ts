@@ -130,9 +130,26 @@ export async function listItemsByTrack(db: Queryable, trackId: string): Promise<
  * project, distinguishing "doesn't exist at all" from "exists but a
  * different project" (404 either way, per TRD) the same way
  * findTrackById (tracks.ts) scopes tracks by project. Items don't carry
- * `project_id` directly, so this joins through the owning track. */
+ * `project_id` directly, so this joins through the owning track.
+ *
+ * Locks the item row (`FOR UPDATE`) — adversarial-review P2: the
+ * `done -> done` no-op exemption reads this row's *current* status to
+ * decide whether to run the unmet-dependency check at all. Without a
+ * lock here, two concurrent kt_update_item_status calls on the same item
+ * can both read the same pre-transition status: e.g. call A reads
+ * `done`, call B concurrently transitions the item to `pending` (leaving
+ * an unmet dependency reopened) and commits, then call A — having
+ * already decided from its earlier read that this is a `done -> done`
+ * no-op — writes `done` again without ever running the check, silently
+ * performing what is actually a `pending -> done` transition that should
+ * have been rejected. Locking the row here forces a concurrent status
+ * change to wait until this transaction commits or rolls back, so the
+ * two calls serialize instead of racing. Must be called inside the same
+ * transaction as the eventual status UPDATE — a bare Pool would release
+ * the lock immediately, which is why this takes a PoolClient, not the
+ * shared Queryable type. */
 export async function findItemInProject(
-  db: Queryable,
+  db: PoolClient,
   projectId: string,
   itemId: string,
 ): Promise<ItemRow | null> {
@@ -140,7 +157,8 @@ export async function findItemInProject(
     `SELECT i.*
      FROM items i
      JOIN tracks t ON t.id = i.track_id
-     WHERE i.id = $1 AND t.project_id = $2`,
+     WHERE i.id = $1 AND t.project_id = $2
+     FOR UPDATE OF i`,
     [itemId, projectId],
   );
   return result.rows[0] ?? null;
@@ -165,6 +183,17 @@ export async function findItemInProject(
  * Must be called inside the same transaction as the eventual status
  * UPDATE — a bare Pool would release the lock immediately, which is why
  * this takes a PoolClient, not the shared Queryable type.
+ *
+ * `ORDER BY dep.id` before locking (adversarial-review P2): two items
+ * with overlapping but oppositely-ordered dependency sets (e.g. one
+ * depends on [X, Y], another on [Y, X]) being marked done concurrently
+ * would otherwise lock their shared dependency rows in whatever order
+ * Postgres happens to return them — different orders let one transaction
+ * hold X while waiting for Y and the other hold Y while waiting for X,
+ * which Postgres resolves by aborting one with a deadlock error (surfaced
+ * by `runTool` as an opaque 500 instead of the tool's own documented
+ * error shapes). Every caller locking these rows in the same
+ * (id-ascending) order removes the possibility of a lock cycle entirely.
  */
 export async function getUnmetDependencyIds(db: PoolClient, itemId: string): Promise<string[]> {
   const result = await db.query<{ id: string; status: ItemStatus }>(
@@ -172,6 +201,7 @@ export async function getUnmetDependencyIds(db: PoolClient, itemId: string): Pro
      FROM item_dependencies idep
      JOIN items dep ON dep.id = idep.depends_on_item_id
      WHERE idep.item_id = $1
+     ORDER BY dep.id
      FOR UPDATE OF dep`,
     [itemId],
   );
