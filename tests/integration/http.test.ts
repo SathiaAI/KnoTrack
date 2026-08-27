@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildFastify } from '../../src/server/fastify.js';
 import { registerProjectService } from '../../src/mcp/tools/register-project.js';
 import { createTrackService } from '../../src/mcp/tools/create-track.js';
+import { createItemService } from '../../src/mcp/tools/create-item.js';
 import { closeTestPool, getTestConfig, getTestPool, truncateAll } from './helpers.js';
 
 const pool = getTestPool();
@@ -196,6 +197,105 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
     };
     expect(body.result.isError).toBeUndefined();
     expect(body.result.structuredContent.project_id).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  // Regression test for a real bug found only by manual inspection of
+  // server.ts, not by any bot review across 3 PR #9 review rounds nor by
+  // this repo's own test suite: PR #9 fully implemented
+  // registerRecordDecisionTool/registerUpdateItemStatusTool, but
+  // server.ts's buildMcpServer never imported or called either — it kept
+  // calling registerStubTools(server), which still registered both names
+  // as stubs (registerStubTools runs *after* the real-tool registrations
+  // list, so nothing else overrides it). Every one of PR #9's own
+  // integration tests called recordDecisionService/updateItemStatusService
+  // directly, bypassing the actual MCP tool route entirely, so this gap
+  // was invisible to CI. These two tests call through the real HTTP/
+  // JSON-RPC path (the same route http.test.ts's other "real tool call"
+  // tests already use) specifically to catch a tool being left stubbed
+  // after its implementation lands — the class of bug the tests above
+  // this one (checking tools/list names, and that kt_check_drift *is*
+  // still a stub) cannot detect on their own.
+  it('positive: kt_record_decision is wired to its real implementation, not the stub', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'Record decision wiring check',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${config.apiTokens[0]}`,
+      },
+      payload: rpcCall('kt_record_decision', {
+        project_id,
+        track_id,
+        title: 'Pivot the approach',
+        rationale: 'The original approach no longer fits the constraints we found.',
+        what_changed: 'Switched from plan A to plan B.',
+      }),
+    });
+    expect(response.statusCode).toBe(200);
+    const body = parseSseBody(response.body) as {
+      result: { isError?: boolean; structuredContent?: { decision_id: string } };
+    };
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.structuredContent?.decision_id).toMatch(/^[0-9a-f-]{36}$/i);
+    const track = await pool.query('SELECT status FROM tracks WHERE id = $1', [track_id]);
+    expect(track.rows[0]?.status).toBe('pivot_pending');
+  });
+
+  it('positive: kt_update_item_status is wired to its real implementation, not the stub', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'Update item status wiring check',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const { item_id } = await createItemService(pool, config, {
+      project_id,
+      track_id,
+      title: 'Item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${config.apiTokens[0]}`,
+      },
+      payload: rpcCall('kt_update_item_status', {
+        project_id,
+        item_id,
+        status: 'in_progress',
+      }),
+    });
+    expect(response.statusCode).toBe(200);
+    const body = parseSseBody(response.body) as {
+      result: { isError?: boolean; structuredContent?: { ok: boolean } };
+    };
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.structuredContent?.ok).toBe(true);
+    const item = await pool.query('SELECT status FROM items WHERE id = $1', [item_id]);
+    expect(item.rows[0]?.status).toBe('in_progress');
   });
 
   it('stub tools respond with a clear not-implemented error rather than silently succeeding', async () => {
