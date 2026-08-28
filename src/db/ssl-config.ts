@@ -34,13 +34,6 @@ const SSL_QUERY_PARAMS = [
 ];
 
 /**
- * Removes every TLS-related query parameter from a Postgres connection
- * string, so that DATABASE_SSL_MODE / KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED /
- * KNOTRACK_DB_SSL_CA_BASE64 (docs/TRD.md §7) remain the sole source of
- * truth for TLS behavior — never silently overridden by a query parameter
- * pg's own connection-string parser recognizes.
- */
-/**
  * Resolves the effective TLS mode the same way everywhere it's computed
  * (src/config/env.ts's loadConfig() and scripts/migrate.ts): an explicit
  * DATABASE_SSL_MODE always wins; otherwise 'require' in production,
@@ -60,6 +53,13 @@ export function resolveSslMode(
   return nodeEnv === 'production' ? 'require' : 'disable';
 }
 
+/**
+ * Removes every TLS-related query parameter from a Postgres connection
+ * string, so that DATABASE_SSL_MODE / KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED /
+ * KNOTRACK_DB_SSL_CA_BASE64 (docs/TRD.md §7) remain the sole source of
+ * truth for TLS behavior — never silently overridden by a query parameter
+ * pg's own connection-string parser recognizes.
+ */
 export function stripSslQueryParams(connectionString: string): string {
   const url = new URL(connectionString);
   for (const param of SSL_QUERY_PARAMS) {
