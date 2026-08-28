@@ -1,12 +1,19 @@
 // pg.Pool singleton, sized from KNOTRACK_DB_POOL_MAX (TRD §6.2).
 import { Pool, type PoolConfig } from 'pg';
 import type { Config } from '../config/env.js';
+import { stripSslQueryParams } from './ssl-config.js';
 
 let pool: Pool | undefined;
 
 export function createPool(config: Config, overrides: Partial<PoolConfig> = {}): Pool {
   const poolConfig: PoolConfig = {
-    connectionString: config.databaseUrl,
+    // node-postgres parses sslmode/sslcert/sslkey/sslrootcert/etc. out of
+    // the connection string itself and uses them to build its own `ssl`
+    // option, silently replacing whatever this function sets below (PR
+    // #11 review finding, reproduced directly against pg 8.13.1) — strip
+    // them so DATABASE_SSL_MODE/KNOTRACK_DB_SSL_* below are the only
+    // source of truth for TLS behavior.
+    connectionString: stripSslQueryParams(config.databaseUrl),
     max: config.dbPoolMax,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,

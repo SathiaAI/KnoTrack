@@ -1,6 +1,7 @@
 // zod schema for process.env -> typed Config object.
 // See docs/TRD.md §7 for the full env var table this mirrors.
 import { z } from 'zod';
+import { decodeAndValidateSslCa, resolveSslMode } from '../db/ssl-config.js';
 
 const base64Bytes = (expectedLength: number) =>
   z.string().refine(
@@ -49,24 +50,30 @@ const envSchema = z.object({
   // for the MITM gap KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false leaves open,
   // rather than disabling verification. Optional: every other deploy
   // target (Supabase, Fly.io, local dev) has no reason to set this.
+  //
+  // Parsed (not just shape-checked) via decodeAndValidateSslCa
+  // (src/db/ssl-config.ts, shared with scripts/migrate.ts) — PR #11 review
+  // finding: a plain base64-shape check accepts base64-encoded non-PEM
+  // garbage (e.g. `aGVsbG8=`, which decodes to "hello"), which used to
+  // fail late and confusingly at TLS-handshake time instead of at startup
+  // config validation. This transform yields the decoded, verified PEM
+  // directly — loadConfig() below uses it as-is, no separate decode step.
   KNOTRACK_DB_SSL_CA_BASE64: z
     .string()
     .optional()
     .transform((value) => (value && value.length > 0 ? value : undefined))
-    .refine(
-      (value) => {
-        if (value === undefined) return true;
-        // Node's Buffer.from(str, 'base64') silently drops characters
-        // outside the base64 alphabet instead of throwing, so garbage
-        // input would otherwise decode "successfully" into nonsense bytes
-        // — a strict pattern match is the only thing that actually
-        // rejects a malformed value. Expects unwrapped (single-line)
-        // base64, e.g. `base64 -w0` / `openssl base64 -A` output.
-        const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-        return STRICT_BASE64.test(value) && Buffer.from(value, 'base64').length > 0;
-      },
-      { message: 'KNOTRACK_DB_SSL_CA_BASE64 must be valid, unwrapped (single-line) base64' },
-    ),
+    .transform((value, ctx): string | undefined => {
+      if (value === undefined) return undefined;
+      try {
+        return decodeAndValidateSslCa(value);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'invalid KNOTRACK_DB_SSL_CA_BASE64',
+        });
+        return z.NEVER;
+      }
+    }),
   KNOTRACK_DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   KNOTRACK_DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   KNOTRACK_DRIFT_SCAN_TRACK_CAP: z.coerce.number().int().positive().default(500),
@@ -115,8 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const data = parsed.data;
   const nodeEnv = data.NODE_ENV;
-  const databaseSslMode =
-    data.DATABASE_SSL_MODE ?? (nodeEnv === 'production' ? 'require' : 'disable');
+  const databaseSslMode = resolveSslMode(nodeEnv, data.DATABASE_SSL_MODE);
 
   return {
     databaseUrl: data.DATABASE_URL,
@@ -127,9 +133,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: data.HOST,
     databaseSslMode,
     dbSslRejectUnauthorized: data.KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED,
-    dbSslCa: data.KNOTRACK_DB_SSL_CA_BASE64
-      ? Buffer.from(data.KNOTRACK_DB_SSL_CA_BASE64, 'base64').toString('utf8')
-      : undefined,
+    dbSslCa: data.KNOTRACK_DB_SSL_CA_BASE64,
     dbStatementTimeoutMs: data.KNOTRACK_DB_STATEMENT_TIMEOUT_MS,
     dbPoolMax: data.KNOTRACK_DB_POOL_MAX,
     driftScanTrackCap: data.KNOTRACK_DRIFT_SCAN_TRACK_CAP,

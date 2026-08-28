@@ -18,6 +18,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, type ClientBase } from 'pg';
 import { loadDotEnvIfPresent } from '../src/config/load-dotenv.js';
+import {
+  decodeAndValidateSslCa,
+  resolveSslMode,
+  stripSslQueryParams,
+} from '../src/db/ssl-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(__dirname, '..', 'migrations');
@@ -152,7 +157,15 @@ async function main(): Promise<void> {
     throw new Error('DATABASE_URL is required to run migrations');
   }
 
-  const sslMode = process.env.DATABASE_SSL_MODE ?? 'disable';
+  // Mirrors loadConfig()'s own default (src/config/env.ts) via the shared
+  // resolveSslMode helper: DATABASE_SSL_MODE unset means "require in
+  // production, disable otherwise" — the same as the app itself, not
+  // unconditionally 'disable' regardless of NODE_ENV. PR #11 review
+  // finding (Codex): this used to hardcode 'disable' here, so a
+  // production deploy that never set DATABASE_SSL_MODE explicitly would
+  // silently skip TLS during the migration step even though the app's
+  // own pool would enforce it.
+  const sslMode = resolveSslMode(process.env.NODE_ENV, process.env.DATABASE_SSL_MODE);
   // Same fix as src/db/pool.ts (adversarial-review security-2/data_privacy-1):
   // verify the server's TLS certificate by default; only an explicit
   // KNOTRACK_DB_SSL_REJECT_UNAUTHORIZED=false opts out, for a broken/
@@ -162,11 +175,20 @@ async function main(): Promise<void> {
   // KNOTRACK_DB_SSL_CA_BASE64) — this script deliberately doesn't go
   // through loadConfig()/createPool() (a migration run shouldn't have to
   // supply KNOTRACK_API_TOKENS/KNOTRACK_ENCRYPTION_KEY just to connect),
-  // so the same CA-pinning logic is duplicated here rather than shared.
+  // so it calls the same shared validator (src/db/ssl-config.ts) directly
+  // rather than going through the Zod schema. decodeAndValidateSslCa
+  // throws on malformed input — PR #11 review finding (CodeRabbit): the
+  // old inline `Buffer.from(...).toString('utf8')` silently decoded a
+  // malformed value (e.g. `%%%%`) into an empty string, which fell
+  // through to the `rejectUnauthorized` branch below instead of failing
+  // loudly.
   const sslCaBase64 = process.env.KNOTRACK_DB_SSL_CA_BASE64;
-  const sslCa = sslCaBase64 ? Buffer.from(sslCaBase64, 'base64').toString('utf8') : undefined;
+  const sslCa = sslCaBase64 ? decodeAndValidateSslCa(sslCaBase64) : undefined;
   const client = new Client({
-    connectionString: databaseUrl,
+    // Same query-param-stripping protection as src/db/pool.ts — a
+    // DATABASE_URL containing e.g. ?sslmode=no-verify would otherwise
+    // silently override the ssl option built below.
+    connectionString: stripSslQueryParams(databaseUrl),
     ssl:
       sslMode === 'require'
         ? sslCa
