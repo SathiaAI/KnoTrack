@@ -221,7 +221,9 @@ either way)_
 ## After running all four
 
 1. Update this file's four **Result** fields with what actually
-   happened — pass, fail, and exact deviations from the steps above.
+   happened — pass, fail, and exact deviations from the steps (a
+   platform's docs are often behind its actual UI; note where that
+   happened).
 2. Update `docs/ROADMAP.md`: flip `T7.1`/`T7.2`/`T4.4`'s status once
    each is genuinely done, don't just check the box because the attempt
    was made — a failed Grok/Perplexity attempt still closes `T4.4` per
