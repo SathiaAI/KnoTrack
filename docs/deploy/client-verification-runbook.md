@@ -49,19 +49,39 @@ starting, don't rediscover these live:**
 
 **Steps:**
 
-1. **Supabase:** create a new Supabase project (any region). Copy its
-   Postgres **direct** connection string (Project Settings → Database →
-   Connection string → "URI", the non-pooled one) — this is your
-   `DATABASE_URL`. Do **not** use the Supavisor transaction-pooled
-   connection string here: `scripts/migrate.ts` takes a session-level
-   `pg_advisory_lock` and holds it across multiple statements
-   (`scripts/migrate.ts`'s `applyMigrations`), and under transaction
-   pooling those statements can land on different backend sessions —
-   the lock can be ineffective, leak on a pooled backend, or block a
-   later deploy (adversarial PR review finding). The app's own runtime
-   pool (`DATABASE_URL` used by `src/db/pool.ts`) is fine either way —
-   TRD's connection pool is small by design (§7) — this restriction is
-   specifically about the migration step.
+1. **Supabase:** create a new Supabase project (any region). `DATABASE_URL`
+   needs a connection that is both session-level (holds a
+   `pg_advisory_lock` across multiple statements — see below) and reachable
+   from Render's network. Those two requirements rule out two of
+   Supabase's three connection strings, which is why the pick below isn't
+   the "direct" one you might reach for first:
+   - **Do not** use the Supavisor **transaction-mode** connection string
+     (port `6543`): `scripts/migrate.ts` takes a session-level
+     `pg_advisory_lock` and holds it across multiple statements
+     (`scripts/migrate.ts`'s `applyMigrations`), and under transaction
+     pooling those statements can land on different backend sessions — the
+     lock can be ineffective, leak on a pooled backend, or block a later
+     deploy (adversarial PR review finding).
+   - **Do not** use Supabase's plain **direct** connection string either,
+     despite it being session-level: that endpoint is IPv6-only, and
+     Render's outbound network is IPv4-only by default (shared IPv4) —
+     Render simply cannot reach it, so the migration step would fail to
+     connect regardless of the advisory-lock question (CodeRabbit
+     follow-up review finding on this file's first fix pass; confirmed
+     against Supabase's and Render's own networking docs).
+   - **Use Supavisor's Session mode instead, on port `5432`**
+     (Project Settings → Database → Connection string → pick "Session
+     mode," not "Transaction mode"). Session mode is dual-stack
+     (IPv4-reachable from Render) and session-level (safe for
+     `pg_advisory_lock`), so it satisfies both constraints at once. Use
+     this same string for `DATABASE_URL` as a whole — the app's own
+     runtime pool (`src/db/pool.ts`) has no conflicting requirement, so
+     there's no reason to run a different connection string for the app
+     than for the migration step.
+   - If a true direct connection is ever required for some other reason,
+     Supabase's paid IPv4 add-on makes the direct endpoint reachable from
+     an IPv4-only network like Render's — not needed for this runbook, but
+     the fallback if Session mode turns out to be insufficient.
 2. **Render:** create a new Web Service on a **paid** plan — Render's
    Pre-Deploy Command (used below) is not available on the Free tier
    (adversarial PR review finding; confirmed against Render's own
@@ -160,14 +180,21 @@ writing — [Create a Fly Postgres Cluster](https://fly.io/docs/postgres/getting
 5. Set secrets via stdin, not as command-line arguments — a
    `fly secrets set KEY=value ...` invocation would leave
    `KNOTRACK_API_TOKENS` and `KNOTRACK_ENCRYPTION_KEY` sitting in shell
-   history (adversarial PR review finding):
+   history (adversarial PR review finding). A heredoc avoids putting the
+   values on the command line itself, but an interactive Bash session
+   still writes the heredoc's body lines to `~/.bash_history` once the
+   command completes — pause history for just this command with
+   `set +o history` / `set -o history` around it (CodeRabbit follow-up
+   review finding on this file's first fix pass):
    ```bash
+   set +o history
    fly secrets import --app <knotrack-app-name> <<'EOF'
    KNOTRACK_API_TOKENS=<fresh token>
    KNOTRACK_ENCRYPTION_KEY=<32-byte-base64>
    NODE_ENV=production
    DATABASE_SSL_MODE=disable
    EOF
+   set -o history
    ```
    (`disable` because step 4 connects over Fly's private network per the
    quirk above — confirm this is actually how `fly postgres attach`
