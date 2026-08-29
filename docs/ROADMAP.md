@@ -866,13 +866,38 @@ for track in [T1, T2, T3, T4, T5, T6, T7, T8]:      # in document order
             depends_on = [item_id[d] for d in item.depends_on],  # may reference items in earlier tracks
         )
 
+# This document only tracks Track-level status (each Track's "Status:"
+# line above), not a formal per-Item status field — so "every completed
+# Item under T1-T7" (T8.3's acceptance criterion) isn't something this
+# pseudocode can compute from `item` alone. `items_completed_at_cutover`
+# and `historical_pivots` are the operator's real, as-of-cutover inputs
+# (built by walking T1-T7 against the actual shipped state, same as any
+# other Track/Item status judgment call in this document), supplied here
+# rather than invented.
+backfilled_items = []
+for item in items_completed_at_cutover:             # real IDs, not inferred
+    kt_update_item_status(item_id = item_id[item], status = "done")
+    backfilled_items.append(item_id[item])
+
+for pivot in historical_pivots:                     # any real pivot that
+    kt_record_decision(                             # occurred during T1-T7 —
+        project_id    = project.id,                 # see T8.3's acceptance
+        decision_text = pivot.description,          # criterion above; empty
+        resolves_pivot = pivot.already_resolved,     # list if none occurred
+    )
+
+# T8.3's acceptance criterion is these two loops actually running — the
+# summary below is a record of that having happened, not a substitute for
+# it (adversarial PR review finding: an earlier draft of this pseudocode
+# created Tracks/Items and then wrote a summary claiming the backfill
+# happened without ever calling kt_update_item_status/kt_record_decision).
 kt_record_session_summary(
     project_id    = project.id,
     summary_text  = "Seeded KnoTrack's own roadmap (docs/ROADMAP.md) as the "
                      "initial Tracks/Items; backfilled T1-T7 status to match "
                      "reality as of the cutover date.",
     files_touched = ["docs/ROADMAP.md"],
-    items_touched = [item_id["T8.2"], item_id["T8.3"]],
+    items_touched = [item_id["T8.2"], item_id["T8.3"], *backfilled_items],
 )
 ```
 
