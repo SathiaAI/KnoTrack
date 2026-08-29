@@ -18,6 +18,7 @@
     "rotate-encryption-key": "tsx scripts/rotate-encryption-key.ts",
     "get-project-status": "tsx scripts/get-project-status-cli.ts",
     "seed-self": "tsx scripts/seed-self.ts",
+    "check-roadmap-drift": "tsx scripts/check-roadmap-drift.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:mutation": "stryker run",

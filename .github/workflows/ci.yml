@@ -1,0 +1,52 @@
+name: CI
+
+# There was no CI workflow in this repo before 2026-08-29 — every gate
+# (typecheck, lint, format, tests) only ran locally, on whoever's machine
+# happened to run it before pushing. That's a bigger gap than the
+# roadmap-drift problem this file was added to fix: a check that only
+# runs when someone remembers to run it isn't a check, it's a suggestion.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: knotrack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/knotrack_test
+      DATABASE_SSL_MODE: disable
+      KNOTRACK_API_TOKENS: kt_ci_placeholder_token
+      KNOTRACK_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history — check-roadmap-drift's soft check diffs against origin/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      # Roadmap-drift check first and separately, so a doc/code mismatch
+      # is the specific, readable failure a reviewer sees — not buried
+      # under an unrelated typecheck or test failure.
+      - name: Check roadmap doesn't claim a stale tool-implementation status
+        run: npm run check-roadmap-drift
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run migrate
+      - run: npm test
