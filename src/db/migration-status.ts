@@ -48,8 +48,17 @@ export async function getPendingMigrationFiles(
     .filter((f) => f.endsWith('.sql') && !f.endsWith('.down.sql'))
     .sort();
 
+  // Deliberately unqualified (relies on the connection's search_path),
+  // matching the equally-unqualified `SELECT name FROM schema_migrations`
+  // below and scripts/migrate.ts's own unqualified `CREATE TABLE IF NOT
+  // EXISTS schema_migrations`. Hardcoding `public.schema_migrations` here
+  // (as a previous version of this check did) would silently disagree
+  // with the runner whenever the connecting role has a non-default
+  // search_path: the table would exist and be fully migrated, just not
+  // in `public`, and this check would report "table doesn't exist" and
+  // treat every migration as pending — adversarial PR review finding.
   const tableCheck = await client.query<{ exists: string | null }>(
-    "SELECT to_regclass('public.schema_migrations') AS exists",
+    "SELECT to_regclass('schema_migrations') AS exists",
   );
   const tableExists = tableCheck.rows[0]?.exists != null;
   if (!tableExists) {

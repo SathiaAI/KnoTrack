@@ -259,8 +259,9 @@ than getting its own numbered item.
 
 16. **T2.16 — Track lifecycle: switch `on_track`/`blocked`/`done` from
     stored to derived (revised 2026-08-29 — supersedes this item's own
-    first draft from the day before; not yet built, not yet
-    Paul-approved).** Closes a real gap found by tracing `tracks.status`
+    first draft from the day before; design decided and approved by
+    Paul 2026-08-29, not yet built — see the "Decided by Paul" note
+    below).** Closes a real gap found by tracing `tracks.status`
     end to end, not merely inferred: the schema and `kt_create_track`'s
     own blocking check (`allDependenciesDone = ... === 'done'`) both
     treat `done` as a reachable track status, but per `docs/TRD.md` §3.5
@@ -532,12 +533,21 @@ Re-checked item by item, 2026-08-29:
 - `T3.4` — true: an unauthenticated `POST /mcp` returns `401` live; an
   authenticated `initialize` call succeeds. Re-confirmed via direct
   `curl`.
-- `T3.5` — **true, genuinely verified 2026-08-29.** Live `curl` calls
-  through the real bearer-token path returned real success payloads:
+- `T3.5` — **still not genuinely verified — corrected 2026-08-29**
+  (this line previously said "true, genuinely verified"; that was
+  wrong by this item's own acceptance criterion, caught during
+  adversarial PR review). Direct `curl` calls through the real
+  bearer-token path did return real success payloads —
   `kt_register_project` → `{"project_id":"c38068d5-95e7-4a69-8480-8c58d8d2f253"}`,
-  `kt_create_track` → `{"track_id":"82ceffed-3e90-4f5a-8165-3ce8f20cf0f1"}`.
-  Not a health check, not a handshake — the actual write path, actually
-  returning actual IDs.
+  `kt_create_track` → `{"track_id":"82ceffed-3e90-4f5a-8165-3ce8f20cf0f1"}`
+  — real evidence that the HTTP/auth/schema path works end to end, and
+  not nothing. But `T3.5`'s acceptance criterion explicitly requires
+  **a real MCP client**, not raw HTTP calls, and this section's own
+  root-cause writeup above already warns against exactly this shape of
+  self-graded pass (treating connectivity/auth checks as equivalent to
+  a real write-path client call). Remains open until an actual
+  MCP-speaking client (e.g. Claude Desktop or another configured
+  client) makes these calls.
 - `T3.6` — still unwritten, unchanged.
 
 **depends_on:** `T2`.
@@ -805,13 +815,15 @@ fixtures).
 3. **T8.3 — Historical status backfilled.** Acceptance: every completed
    Item under `T1`–`T7` is set to `done` via `kt_update_item_status`
    (there is no track-status tool by design — see the tool table above —
-   so each track's stored status is instead brought to `done` the same
-   way it would happen in normal operation: by its items all reaching
-   `done`, seeded directly at the storage layer for this one backfill
-   pass since these events predate the running instance); any real pivot
-   that occurred during T1–T7 is additionally recorded via
-   `kt_record_decision` so the audit trail isn't silently backdated.
-   depends_on: `T8.2`.
+   and per `T2.16`'s derived-status model there is nothing else to
+   write: `on_track`/`blocked`/`done` are computed at read time from
+   item status, so backfilling items to `done` is sufficient for their
+   tracks to read as `done` too, with no separate track-status seeding
+   step); any real pivot that occurred during T1–T7 is additionally
+   recorded via `kt_record_decision` so the audit trail isn't silently
+   backdated (one that has since been resolved is recorded via
+   `kt_record_decision(resolves_pivot: true)`, not left
+   `pivot_pending`). depends_on: `T8.2`, `T2.16`.
 4. **T8.4 — Session-recording cutover.** Acceptance: `CONTRIBUTING.md`
    states that all further KnoTrack development sessions are recorded via
    `kt_record_session_summary` instead of ad hoc notes, and the first
@@ -990,9 +1002,9 @@ scope decisions, not bugs, per the `clear-decisions` walkthrough:**
   reach `done` at all in normal operation (see `T2.16` above for the
   full trace through `docs/TRD.md` §3.5 and `kt_create_track`'s own
   logic), which is *why* nothing ever unblocks a dependent. Design
-  revised again 2026-08-29 (derived status, not a stored+cascade patch —
-  see `T2.16`'s revision note), pending Paul's answer to the one
-  remaining open question there before it's built.
+  revised again 2026-08-29 and decided by Paul the same day (derived
+  status, not a stored+cascade patch, plus the `resolves_pivot`
+  mechanism — see `T2.16`'s revision note); not yet built.
 - **Still unscheduled, but with a stated trigger now (2026-08-28) —
   `@modelcontextprotocol/sdk` v1 → v2 migration.** Needed for
   `server/discover` and the 2026-07-28 protocol revision's stateless

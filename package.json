@@ -9,7 +9,7 @@
     "node": ">=20.12"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'); if (fs.existsSync('migrations')) fs.cpSync('migrations','dist/migrations',{recursive:true})\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
     "start": "node dist/src/index.js",
@@ -18,6 +18,7 @@
     "rotate-encryption-key": "tsx scripts/rotate-encryption-key.ts",
     "get-project-status": "tsx scripts/get-project-status-cli.ts",
     "seed-self": "tsx scripts/seed-self.ts",
+    "check-roadmap-drift": "tsx scripts/check-roadmap-drift.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:mutation": "stryker run",
