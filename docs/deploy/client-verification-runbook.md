@@ -50,13 +50,31 @@ starting, don't rediscover these live:**
 **Steps:**
 
 1. **Supabase:** create a new Supabase project (any region). Copy its
-   Postgres connection string (Project Settings → Database → Connection
-   string → "URI", using the pooled connection string if you want
-   Supavisor pooling, or the direct one — either works, TRD's connection
-   pool is small by design, §7). This is your `DATABASE_URL`.
-2. **Render:** create a new Web Service, connect the KnoTrack GitHub
-   repo. In the service Settings page, set:
-   - **Build Command:** `npm ci && npm run build`
+   Postgres **direct** connection string (Project Settings → Database →
+   Connection string → "URI", the non-pooled one) — this is your
+   `DATABASE_URL`. Do **not** use the Supavisor transaction-pooled
+   connection string here: `scripts/migrate.ts` takes a session-level
+   `pg_advisory_lock` and holds it across multiple statements
+   (`scripts/migrate.ts`'s `applyMigrations`), and under transaction
+   pooling those statements can land on different backend sessions —
+   the lock can be ineffective, leak on a pooled backend, or block a
+   later deploy (adversarial PR review finding). The app's own runtime
+   pool (`DATABASE_URL` used by `src/db/pool.ts`) is fine either way —
+   TRD's connection pool is small by design (§7) — this restriction is
+   specifically about the migration step.
+2. **Render:** create a new Web Service on a **paid** plan — Render's
+   Pre-Deploy Command (used below) is not available on the Free tier
+   (adversarial PR review finding; confirmed against Render's own
+   deploy-lifecycle docs). Connect the KnoTrack GitHub repo, and in the
+   service Settings page, set:
+   - **Build Command:** `npm ci && npm run build` — `npm run build` now
+     copies `migrations/` into `dist/migrations` itself (guarded so it's
+     a no-op inside the Docker build, where that directory isn't
+     present at build time and is copied separately — see the
+     Dockerfile), so nothing extra is needed here; without that fix, a
+     source-based build like this one would produce a `dist/` with no
+     migrations directory at all, and the Pre-Deploy Command below would
+     fail with `ENOENT` (adversarial PR review finding).
    - **Pre-Deploy Command:** `node dist/scripts/migrate.js`
    - **Start Command:** `node dist/src/index.js` (no migration wrapper —
      the pre-deploy command already ran it, exactly once, before this
@@ -114,9 +132,13 @@ writing — [Create a Fly Postgres Cluster](https://fly.io/docs/postgres/getting
 1. `fly postgres create` — creates a standalone Postgres cluster (any
    name/region). Note: this does not generate a `fly.toml`, so reference
    it by name (`-a <postgres-app-name>`) in later commands if needed.
-2. `fly launch` from the KnoTrack repo root to scaffold the app's
-   `fly.toml` (or hand-write one — the app doesn't need anything
-   Fly-specific beyond what's below).
+2. `fly launch --no-deploy` from the KnoTrack repo root to scaffold the
+   app's `fly.toml` (or hand-write one — the app doesn't need anything
+   Fly-specific beyond what's below). `--no-deploy` matters here: without
+   it, `fly launch` deploys immediately after creating the app, before
+   the database is attached, secrets are set, or `release_command` is
+   added below — an avoidable failed first deployment (adversarial PR
+   review finding). The real first deploy is step 6.
 3. In `fly.toml`, add:
    ```toml
    [deploy]
@@ -129,10 +151,24 @@ writing — [Create a Fly Postgres Cluster](https://fly.io/docs/postgres/getting
      timeout = "5s"
      path = "/health"
    ```
-4. `fly postgres attach <postgres-app-name> --app <knotrack-app-name>`
+4. `fly postgres attach <postgres-app-name> --app <knotrack-app-name> --superuser=false`
    — this sets `DATABASE_URL` on the app automatically; you don't set it
-   by hand.
-5. `fly secrets set KNOTRACK_API_TOKENS=<fresh token> KNOTRACK_ENCRYPTION_KEY=<32-byte-base64> NODE_ENV=production DATABASE_SSL_MODE=disable`
+   by hand. `--superuser=false` matters: the flag defaults to `true`,
+   which would otherwise grant the app's database user full superuser
+   privileges it has no need for (adversarial PR review finding — least
+   privilege, not "it happens to work either way").
+5. Set secrets via stdin, not as command-line arguments — a
+   `fly secrets set KEY=value ...` invocation would leave
+   `KNOTRACK_API_TOKENS` and `KNOTRACK_ENCRYPTION_KEY` sitting in shell
+   history (adversarial PR review finding):
+   ```bash
+   fly secrets import --app <knotrack-app-name> <<'EOF'
+   KNOTRACK_API_TOKENS=<fresh token>
+   KNOTRACK_ENCRYPTION_KEY=<32-byte-base64>
+   NODE_ENV=production
+   DATABASE_SSL_MODE=disable
+   EOF
+   ```
    (`disable` because step 4 connects over Fly's private network per the
    quirk above — confirm this is actually how `fly postgres attach`
    wired it before assuming; if it turns out to be a public connection
@@ -223,7 +259,16 @@ either way)_
 1. Update this file's four **Result** fields with what actually
    happened — pass, fail, and exact deviations from the steps (a
    platform's docs are often behind its actual UI; note where that
-   happened).
+   happened). This file's Result fields are the record for all four
+   parts. Parts C and D's outcomes additionally belong in
+   `docs/client-compatibility.md` (CodeRabbit review finding: the two
+   documents' instructions previously read as conflicting about where
+   client results go) — that file is the standing, cross-project ledger
+   of which MCP clients work with a bearer-token server, meant to be
+   consulted on its own by someone who has never run this runbook, not
+   just a duplicate of Parts C/D's Result fields. Parts A and B are
+   deploy-platform tests, not client-compatibility facts, so they only
+   need this file's own Result field.
 2. Update `docs/ROADMAP.md`: flip `T7.1`/`T7.2`/`T4.4`'s status once
    each is genuinely done, don't just check the box because the attempt
    was made — a failed Grok/Perplexity attempt still closes `T4.4` per

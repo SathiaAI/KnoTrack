@@ -98,15 +98,28 @@ function runHardCheck(): boolean {
 }
 
 function runSoftCheck(): void {
+  // On a `push` to main, actions/checkout has already advanced the local
+  // origin/main ref to the just-pushed commit by the time this runs, so
+  // `git merge-base HEAD origin/main` resolves to HEAD itself and the diff
+  // below becomes HEAD..HEAD — always empty, silently disabling this check
+  // for every direct push (CodeRabbit + Codex review finding). CI sets
+  // ROADMAP_DIFF_BASE to the push event's pre-push SHA (github.event.before)
+  // for exactly this case; it's unset (empty string) on pull_request events,
+  // where the merge-base fallback below is already correct.
+  const envDiffBase = process.env.ROADMAP_DIFF_BASE?.trim();
   let diffBase: string;
-  try {
-    diffBase = execSync('git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1', {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    }).trim();
-  } catch {
-    console.log('(soft check skipped — no git history to diff against, e.g. a shallow clone)');
-    return;
+  if (envDiffBase) {
+    diffBase = envDiffBase;
+  } else {
+    try {
+      diffBase = execSync('git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1', {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }).trim();
+    } catch {
+      console.log('(soft check skipped — no git history to diff against, e.g. a shallow clone)');
+      return;
+    }
   }
   let changed: string[];
   try {
