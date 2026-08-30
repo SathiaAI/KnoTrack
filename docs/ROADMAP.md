@@ -873,31 +873,64 @@ for track in [T1, T2, T3, T4, T5, T6, T7, T8]:      # in document order
 # and `historical_pivots` are the operator's real, as-of-cutover inputs
 # (built by walking T1-T7 against the actual shipped state, same as any
 # other Track/Item status judgment call in this document), supplied here
-# rather than invented.
-backfilled_by_track = {}   # track.id -> [real item ids backfilled in it]
-for item in items_completed_at_cutover:             # real IDs, not inferred
-    kt_update_item_status(item_id = item_id[item], status = "done")
-    backfilled_by_track.setdefault(item.track_id, []).append(item_id[item])
+# rather than invented. Both use plain roadmap labels ("T3", "T3.2") as
+# their only identifier shape, consistently, so every lookup below goes
+# through the same track_id[...] / item_id[...] maps built above — never
+# a mix of a label used as a dict key and an object with attributes
+# (adversarial PR review finding: an earlier draft mixed `item` used both
+# as an `item_id` dict key and as an object exposing `.track_id`, which
+# would raise a TypeError/KeyError at the first entry).
+items_completed_at_cutover = [
+    # {"item": "<roadmap Item id, e.g. 'T3.2'>", "track": "<its roadmap Track id, e.g. 'T3'>"}
+    # ...
+]
+historical_pivots = [
+    # {"track": "<roadmap Track id>", "title": ..., "rationale": ...,
+    #  "what_changed": ..., "already_resolved": <bool>}
+    # ...
+]
 
-for pivot in historical_pivots:                     # any real pivot that
-    kt_record_decision(                             # occurred during T1-T7 —
-        project_id    = project.id,                 # see T8.3's acceptance
-        decision_text = pivot.description,          # criterion above; empty
-        resolves_pivot = pivot.already_resolved,     # list if none occurred
-    )
+# One call per track touched by either loop below — never a single call
+# spanning T1-T8: kt_record_session_summary requires every id in
+# `items_touched` to belong to the single `track_id` passed alongside it
+# (src/mcp/tools/record-session-summary.ts rejects a mixed-track list,
+# adversarial PR review finding on an earlier draft of this pseudocode).
+# Seeding every touched track's key with `[]` up front — instead of only
+# adding a key when an item is backfilled into it — means a track whose
+# only T1-T7 activity was a pivot (no completed item) still gets a
+# session-summary entry below (adversarial PR review finding: a prior
+# draft only populated this dict from the item-backfill loop, so a
+# pivot-only track's kt_record_decision call had no matching
+# kt_record_session_summary at all).
+touched_tracks = {p["track"] for p in historical_pivots} | {
+    e["track"] for e in items_completed_at_cutover
+}
+backfilled_by_track = {track_key: [] for track_key in touched_tracks}
 
-# T8.3's acceptance criterion is the two loops above actually running —
-# these summaries are a record of that having happened, not a substitute
-# for it (adversarial PR review finding: an earlier draft of this
-# pseudocode created Tracks/Items and then wrote a summary claiming the
-# backfill happened without ever calling kt_update_item_status /
-# kt_record_decision). One call per track, not one call spanning T1-T8:
-# kt_record_session_summary requires every id in `items_touched` to
-# belong to the single `track_id` passed alongside it
-# (src/mcp/tools/record-session-summary.ts rejects a mixed-track list) —
-# a later finding on this same pseudocode's first fix pass caught an
-# earlier version of this loop trying to pass T1-T7 items and T8's own
-# items in one call.
+for entry in items_completed_at_cutover:
+    kt_update_item_status(item_id = item_id[entry["item"]], status = "done")
+    backfilled_by_track[entry["track"]].append(item_id[entry["item"]])
+
+for pivot in historical_pivots:                       # any real pivot that
+    kt_record_decision(                               # occurred during T1-T7.
+        project_id     = project.id,                  # kt_record_decision's
+        track_id       = track_id[pivot["track"]],    # actual (already-shipped,
+        title          = pivot["title"],              # T2.10) contract requires
+        rationale      = pivot["rationale"],          # all four of project_id/
+        what_changed   = pivot["what_changed"],       # track_id/title/rationale/
+        resolves_pivot = pivot["already_resolved"],   # what_changed — there's no
+    )                                                  # free-text-only form
+    # `resolves_pivot` is T2.16's addition to this call — safe to rely on
+    # here because T8.3 depends_on T2.16 (both land, in order, before T8
+    # ever runs).
+
+# T8.3's acceptance criterion is the loops above actually running — these
+# summaries are a record of that having happened, not a substitute for it
+# (adversarial PR review finding: an earlier draft created Tracks/Items
+# and then wrote a summary claiming the backfill happened without ever
+# calling kt_update_item_status/kt_record_decision). `items_touched=[]` is
+# valid for a pivot-only track — the schema defaults it to an empty array
+# and only validates track membership when the list is non-empty.
 for track_key, items in backfilled_by_track.items():
     kt_record_session_summary(
         project_id    = project.id,
