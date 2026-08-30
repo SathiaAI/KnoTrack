@@ -34,6 +34,12 @@ const STUBS_FILE = path.join(REPO_ROOT, 'src/mcp/tools/stubs.ts');
 const ROADMAP_FILE = path.join(REPO_ROOT, 'docs/ROADMAP.md');
 const MARKER_REGEX = /<!-- STUB_TOOLS: ([^>]+?) -->/;
 
+/**
+ * Parses `src/mcp/tools/stubs.ts`'s `STUBS` array for every `name: 'kt_...'`
+ * entry, sorted. This is the code side of the drift check — the actual,
+ * current set of tools still implemented as stubs, independent of whatever
+ * `docs/ROADMAP.md`'s marker claims.
+ */
 function getStubToolNamesFromCode(): string[] {
   const src = readFileSync(STUBS_FILE, 'utf8');
   const names = [...src.matchAll(/name:\s*'(kt_[a-z_]+)'/g)]
@@ -50,6 +56,12 @@ function getStubToolNamesFromCode(): string[] {
   return names.sort();
 }
 
+/**
+ * Parses `docs/ROADMAP.md`'s `<!-- STUB_TOOLS: ... -->` marker into a
+ * sorted list of tool names. This is the doc side of the drift check — the
+ * roadmap's own claim about which tools are still stubs, compared against
+ * `getStubToolNamesFromCode`'s result by `runHardCheck`.
+ */
 function getStubToolNamesFromRoadmap(): string[] {
   const doc = readFileSync(ROADMAP_FILE, 'utf8');
   const match = doc.match(MARKER_REGEX);
@@ -69,6 +81,13 @@ function getStubToolNamesFromRoadmap(): string[] {
     .sort();
 }
 
+/**
+ * The deterministic HARD check (see file header): compares the stub-tool
+ * list from code against the one claimed in the roadmap marker and prints
+ * exactly what's out of sync. Returns `true` when they match (caller uses
+ * this to decide the script's exit code) — this function itself never
+ * exits the process, so it stays unit-testable in isolation.
+ */
 function runHardCheck(): boolean {
   const fromCode = getStubToolNamesFromCode();
   const fromDoc = getStubToolNamesFromRoadmap();
@@ -97,6 +116,14 @@ function runHardCheck(): boolean {
   return false;
 }
 
+/**
+ * The SOFT check (see file header): warns, but never fails the build, when
+ * this diff touches `src/mcp/tools/`, `src/domain/`, or `migrations/`
+ * without also touching `docs/ROADMAP.md`. Best-effort only — see
+ * `ROADMAP_DIFF_BASE` handling below for the one case (a `push` to `main`)
+ * where the naive git-history diff base would silently disable this check
+ * entirely.
+ */
 function runSoftCheck(): void {
   // On a `push` to main, actions/checkout has already advanced the local
   // origin/main ref to the just-pushed commit by the time this runs, so

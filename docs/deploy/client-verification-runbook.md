@@ -87,14 +87,18 @@ starting, don't rediscover these live:**
    (adversarial PR review finding; confirmed against Render's own
    deploy-lifecycle docs). Connect the KnoTrack GitHub repo, and in the
    service Settings page, set:
-   - **Build Command:** `npm ci && npm run build` — `npm run build` now
-     copies `migrations/` into `dist/migrations` itself (guarded so it's
-     a no-op inside the Docker build, where that directory isn't
-     present at build time and is copied separately — see the
-     Dockerfile), so nothing extra is needed here; without that fix, a
+   - **Build Command:** `npm ci && npm run build` — **depends on PR #12
+     merging first** (or this branch rebasing onto it): PR #12 is what
+     makes `npm run build` copy `migrations/` into `dist/migrations`
+     itself (guarded so it's a no-op inside the Docker build, where that
+     directory isn't present at build time and is copied separately —
+     see the Dockerfile), so that nothing extra is needed here. On this
+     PR's own tree alone, `npm run build` is still plain `tsc`, and a
      source-based build like this one would produce a `dist/` with no
-     migrations directory at all, and the Pre-Deploy Command below would
-     fail with `ENOENT` (adversarial PR review finding).
+     migrations directory at all — the Pre-Deploy Command below would
+     fail with `ENOENT` (adversarial PR review finding; the fix landing
+     in a different PR than the one that surfaced it was flagged
+     explicitly in review rather than left implicit here).
    - **Pre-Deploy Command:** `node dist/scripts/migrate.js`
    - **Start Command:** `node dist/src/index.js` (no migration wrapper —
      the pre-deploy command already ran it, exactly once, before this
