@@ -560,13 +560,18 @@ manual out-of-band fix, and not inferred from `/health` alone. `GET /health`
 was independently re-checked live immediately after (`{"status":"ok",...,"db":"ok"}`,
 `200`). **T3.2 done.**
 
-**What this means for T3.2 specifically: it is not done.** Its own
+**(Historical conclusion, 2026-08-29 — superseded by the 2026-09-03 update
+immediately above; preserved verbatim for the record, not the current
+status.)** What this meant for T3.2 at the time: it was not done. Its own
 acceptance criterion is "runs clean against the Railway database with
 no manual intervention" — and manual intervention (the TCP-proxy
-workaround above) is exactly how the schema actually got created this
-time. The automated on-deploy migration path is unverified at best and
-silently broken at worst. Marking `T3.2` done would repeat the exact
-mistake this section exists to correct.
+workaround above) is exactly how the schema actually got created that
+time. The automated on-deploy migration path was unverified at best and
+silently broken at worst. Marking `T3.2` done at that point would have
+repeated the exact mistake this section exists to correct. **This is no
+longer the case as of 2026-09-03** — see the update above and the
+item-by-item recheck immediately below, both of which supersede this
+paragraph.
 
 Re-checked item by item, 2026-08-29:
 - `T3.1` — true. Confirmed via `mcp__Railway__get-service-config`:
