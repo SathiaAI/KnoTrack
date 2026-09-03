@@ -91,16 +91,42 @@ function getStubToolNamesFromRoadmap(): string[] {
 function runHardCheck(): boolean {
   const fromCode = getStubToolNamesFromCode();
   const fromDoc = getStubToolNamesFromRoadmap();
-  // Both arrays are already .sort()ed by the functions above, so a
-  // straight index-wise comparison catches any difference — including a
-  // duplicate entry on one side that a Set-based comparison would hide
-  // (adversarial PR review finding: `new Set(fromCode)` vs.
-  // `new Set(fromDoc)` collapses duplicates before comparing, so code
-  // `['kt_a']` vs. a marker of `'kt_a, kt_a'` would incorrectly report a
-  // match). An out-of-bounds index compares against `undefined`, which
-  // correctly flags a length mismatch too.
-  const onlyInCode = fromCode.filter((t, index) => t !== fromDoc[index]);
-  const onlyInDoc = fromDoc.filter((t, index) => t !== fromCode[index]);
+  // Both arrays are already .sort()ed by the functions above. A true
+  // multiset diff (two-pointer merge over the sorted arrays) rather than
+  // a positional or Set-based comparison: a Set-based comparison hides a
+  // duplicate entry on one side (adversarial PR review finding:
+  // `new Set(fromCode)` vs. `new Set(fromDoc)` collapses duplicates
+  // before comparing, so code `['kt_a']` vs. a marker of `'kt_a, kt_a'`
+  // would incorrectly report a match), and a plain index-wise comparison
+  // still mislabels *which* names differ once a duplicate shifts every
+  // later index out of alignment (adversarial PR review finding: code
+  // `['kt_a', 'kt_a', 'kt_b']` vs. marker `['kt_a', 'kt_b']` differ only
+  // in how many times `kt_a` appears, but index-wise comparison reports
+  // `kt_b` as both "missing from the marker" and "no longer a stub in
+  // code" — a real, confusing false claim about `kt_b`, even though the
+  // check still correctly fails overall). Counting occurrences per name
+  // and reporting only the surplus on each side gets both the pass/fail
+  // outcome and the diagnostic message right.
+  const onlyInCode: string[] = [];
+  const onlyInDoc: string[] = [];
+  let codeIndex = 0;
+  let docIndex = 0;
+  while (codeIndex < fromCode.length && docIndex < fromDoc.length) {
+    const codeName = fromCode[codeIndex];
+    const docName = fromDoc[docIndex];
+    if (codeName === docName) {
+      codeIndex++;
+      docIndex++;
+    } else if (codeName! < docName!) {
+      onlyInCode.push(codeName!);
+      codeIndex++;
+    } else {
+      onlyInDoc.push(docName!);
+      docIndex++;
+    }
+  }
+  onlyInCode.push(...fromCode.slice(codeIndex));
+  onlyInDoc.push(...fromDoc.slice(docIndex));
 
   if (onlyInCode.length === 0 && onlyInDoc.length === 0) {
     console.log(`✓ Stub-tool list matches: [${fromCode.join(', ')}]`);
