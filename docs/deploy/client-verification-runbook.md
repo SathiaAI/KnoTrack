@@ -143,10 +143,16 @@ mistake to make here:**
   downgrade. Only use `require` if you deliberately connect over Fly's
   public Postgres proxy instead of the private network.
 - Migrations run via `fly.toml`'s **`release_command`** — a one-off task
-  Fly runs once before any new Machine takes traffic, the same
-  "exactly-once, before the app starts" shape as Render's pre-deploy
-  command and Railway's `startCommand` wrapper, just a different
-  mechanism per platform.
+  Fly runs, in a temporary Machine on the newly built image, before any
+  new Machine takes traffic. This is "once per deploy attempt," not a
+  global exactly-once guarantee: a non-zero exit stops that deployment
+  rather than retrying automatically, but a *subsequent* `fly deploy`
+  (run again by a person or by CI after fixing the failure) starts a new
+  deploy attempt and runs `release_command` again — the same shape as
+  Render's pre-deploy command and Railway's `startCommand` wrapper, just
+  a different mechanism per platform (adversarial PR review finding:
+  the previous wording here, "exactly-once," overstated Fly's own
+  documented semantics).
 - `KNOTRACK_DB_SSL_CA_BASE64`: not needed here either — that's a
   Railway-specific quirk (TRD §7).
 

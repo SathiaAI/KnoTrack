@@ -91,10 +91,16 @@ function getStubToolNamesFromRoadmap(): string[] {
 function runHardCheck(): boolean {
   const fromCode = getStubToolNamesFromCode();
   const fromDoc = getStubToolNamesFromRoadmap();
-  const codeSet = new Set(fromCode);
-  const docSet = new Set(fromDoc);
-  const onlyInCode = fromCode.filter((t) => !docSet.has(t));
-  const onlyInDoc = fromDoc.filter((t) => !codeSet.has(t));
+  // Both arrays are already .sort()ed by the functions above, so a
+  // straight index-wise comparison catches any difference — including a
+  // duplicate entry on one side that a Set-based comparison would hide
+  // (adversarial PR review finding: `new Set(fromCode)` vs.
+  // `new Set(fromDoc)` collapses duplicates before comparing, so code
+  // `['kt_a']` vs. a marker of `'kt_a, kt_a'` would incorrectly report a
+  // match). An out-of-bounds index compares against `undefined`, which
+  // correctly flags a length mismatch too.
+  const onlyInCode = fromCode.filter((t, index) => t !== fromDoc[index]);
+  const onlyInDoc = fromDoc.filter((t, index) => t !== fromCode[index]);
 
   if (onlyInCode.length === 0 && onlyInDoc.length === 0) {
     console.log(`✓ Stub-tool list matches: [${fromCode.join(', ')}]`);
