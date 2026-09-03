@@ -93,7 +93,7 @@ UI/API you'd naturally check), not a bug in KnoTrack's own code.
 
 Copy this for each new entry. Keep it factual — what happened, not how it felt.
 
-```
+```markdown
 ## YYYY-MM-DD — <short title>
 
 **Date:** YYYY-MM-DD

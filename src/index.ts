@@ -55,14 +55,21 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     app.log.info({ signal }, 'shutting down');
-    try {
-      await app.close();
-      await closePool();
-      process.exit(0);
-    } catch (error) {
-      app.log.error({ err: error, signal }, 'error during shutdown');
+    // Both cleanups are attempted independently (adversarial PR review
+    // finding: `await app.close(); await closePool();` in sequence inside
+    // one try meant a rejection from app.close() skipped closePool()
+    // entirely, leaking the DB pool's connections until the process was
+    // killed) — allSettled runs both regardless of either's outcome, and
+    // any rejection is logged and still exits non-zero.
+    const results = await Promise.allSettled([app.close(), closePool()]);
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        app.log.error({ err: failure.reason, signal }, 'error during shutdown');
+      }
       process.exit(1);
     }
+    process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));

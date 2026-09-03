@@ -284,16 +284,35 @@ than getting its own numbered item.
 
     **Revised mechanism — compute `on_track`/`blocked`/`done` at read
     time instead of storing them:**
-    a. Drop the write side entirely for these three values.
-       `kt_list_tracks`, `kt_get_track`, and `kt_get_project_status`
-       compute each track's effective status via a query (a CTE or
-       equivalent) over its items' `status` and its `track_dependencies`
-       edges: `done` iff every item is `done`; `blocked` iff not `done`
-       and at least one `depends_on` track is not effectively `done`;
-       `on_track` otherwise. There is no cascade to write, because
-       nothing is ever wrong-until-updated — every read is correct by
-       construction, the same way `kt_get_next_steps` is already a pure
-       read over live data rather than a cached table.
+    a. Drop the write side entirely for these three values. Every
+       consumer of `tracks.status` — not just `kt_list_tracks`,
+       `kt_get_track`, and `kt_get_project_status` (`T2.5`/`T2.6`/`T2.7`)
+       but also `kt_create_track` (validates `depends_on` tracks are
+       `done` before allowing an `on_track` child, via
+       `getTrackStatusesForProject`) and `kt_get_next_steps`/
+       `kt_render_roadmap` (via `getTrackSummariesForProject`) —
+       switches to computing each track's effective status via a query
+       (a CTE or equivalent) over its items' `status` and its
+       `track_dependencies` edges (adversarial PR review finding: an
+       earlier draft of this item named only the three read tools,
+       leaving these other three call sites still reading the
+       soon-to-be-stale stored column). The computation itself:
+       `done` iff the track has at least one item, every one of its
+       items is `done`, **and** every `depends_on` track is itself
+       effectively `done` (adversarial PR review finding, two distinct
+       gaps in the original draft: (1) it let a track compute `done`
+       from its own items alone even while a dependency it structurally
+       requires was still open, which the `blocked` case below already
+       treated as disqualifying — the two cases were inconsistent with
+       each other; (2) a freshly created track with zero items
+       satisfied "every item is `done`" vacuously and would read as
+       `done` before any real work existed); `blocked` iff not `done`
+       and (the track has zero items, or at least one item is not
+       `done`, or at least one `depends_on` track is not effectively
+       `done`); `on_track` otherwise. There is no cascade to write,
+       because nothing is ever wrong-until-updated — every read is
+       correct by construction, the same way `kt_get_next_steps` is
+       already a pure read over live data rather than a cached table.
     b. `pivot_pending` is the one genuinely stateful fact here — it's an
        explicit human/agent decision, not a function of item state — so
        it stays a **stored** override on `tracks` (a `pivot_pending
@@ -336,7 +355,10 @@ than getting its own numbered item.
     Acceptance: a benchmark confirming the derived-status query stays
     inside the `<200ms` simple-read budget at the PRD's stated v1 scale;
     unit tests for a track computing `done` the instant its last item
-    does, a chain of dependent tracks computing `on_track` in the same
+    does, a track with zero items never reading as `done` regardless of
+    its dependencies, a track whose own items are all `done` still
+    reading as `blocked` while a `depends_on` track is not effectively
+    `done`, a chain of dependent tracks computing `on_track` in the same
     read with no separate propagation step, a track regressing correctly
     with no stale cached value anywhere, a `pivot_pending` track
     confirmed staying `pivot_pending` through item completion until
@@ -344,8 +366,12 @@ than getting its own numbered item.
     both clearing the override and appearing in the Decision audit log;
     `docs/TRD.md` §3.5 and §3.10 rewritten to describe the derived model
     and `kt_record_decision`'s new input. depends_on: `T2.5`/`T2.6`/
-    `T2.7` (the three read tools whose queries change), `T2.10`
-    (`kt_record_decision`, already shipped, gains the new field).
+    `T2.7` (the three read tools whose queries change), `T2.3`
+    (`kt_create_track`'s dependency-completeness check reads the same
+    derived status), `T2.12` (`kt_render_roadmap`, and `kt_get_next_steps`
+    alongside it per its `T2.15` note above, both read track status via
+    `getTrackSummariesForProject`), `T2.10` (`kt_record_decision`,
+    already shipped, gains the new field).
 
 **Status reconciliation (added retroactively — this Track's items above
 describe the plan, not yet what shipped at the time this note was
@@ -526,9 +552,20 @@ Re-checked item by item, 2026-08-29:
   because it was applied manually out-of-band (see root cause above),
   not because the automated start-command path was proven to work. Do
   not mark this done until a fresh redeploy's own logs show `migrate.js`
-  actually logging `applying: ...` / `no pending migrations` lines, or
-  until `index.js` is changed to fail loudly (not serve traffic) when
-  its expected schema is missing — see the new `T3.7` below.
+  actually logging `applying: ...` / `no pending migrations` lines — see
+  the new `T3.7` below; that is the only evidence that the *automated*
+  path, not the earlier manual intervention, produced the schema.
+  **Correction (adversarial PR review):** this bullet previously offered
+  a second, equivalent-sounding closing condition — "or until `index.js`
+  is changed to fail loudly ... — see the new `T3.7` below" — but that
+  described `T3.8`, not `T3.7` (fixed above), and more importantly the
+  two are not equivalent evidence for `T3.2`: `T3.8`'s guard only proves
+  *some* schema is present before the server accepts traffic, which is
+  already true today because of the manual out-of-band fix — a server
+  that has always passed that check proves nothing about whether the
+  automated migration path itself works. `T3.8` is a safety net against
+  ever silently serving traffic on a stale schema again; only `T3.7`'s
+  evidence closes `T3.2`.
 - `T3.3` — true. `/health` returns `200` live.
 - `T3.4` — true: an unauthenticated `POST /mcp` returns `401` live; an
   authenticated `initialize` call succeeds. Re-confirmed via direct
@@ -653,16 +690,23 @@ still open, see T3's status above).
 2. **T4.2 — Full tool-call smoke test from the second client.**
    Acceptance: from the second client, `kt_register_project`,
    `kt_create_track`, `kt_create_item`, `kt_update_item_status`,
-   `kt_get_next_steps`, `kt_check_drift`, and `kt_record_session_summary`
-   all succeed against the same instance, with results matching what
-   `T3.5` observed from the first client. depends_on: `T4.1`, `T3.5`.
-   **Correction (2026-08-28):** `kt_check_drift` is a stub today (T6,
-   not yet built) and currently returns a `500` "not implemented" result
-   for every caller, not a real drift answer. As written, this criterion
-   can't be met the way it reads — either amend it to "kt_check_drift
-   returns its documented not-implemented response consistently across
-   both clients" (verifiable now) or move the real assertion to after T6
-   ships. Flagging rather than quietly picking one.
+   `kt_get_next_steps`, and `kt_record_session_summary` all succeed
+   against the same instance, with results matching what `T3.5` observed
+   from the first client; `kt_check_drift` returns its documented
+   not-implemented response consistently across both clients.
+   depends_on: `T4.1`, `T3.5`.
+   **Correction (2026-08-28), resolved (adversarial PR review, flagged as
+   an unresolved decision until now):** `kt_check_drift` is a stub today
+   (`T6`, not yet built) and currently returns a `500` "not implemented"
+   result for every caller, not a real drift answer — and `T6` itself
+   depends on `T5`, which depends on `T4`, so deferring this criterion's
+   real assertion to after `T6` ships would make `T4.2` unable to close
+   until two Tracks scheduled after it are done. The acceptance above
+   now takes the other, immediately verifiable option this note
+   originally offered: `kt_check_drift`'s stub response, not a real
+   drift answer, is what both clients are checked against. The real
+   drift-answer assertion belongs to `T6`'s own acceptance criteria
+   instead, once that tool exists.
 3. **T4.3 — Client-compatibility notes documented.** Acceptance:
    `docs/client-compatibility.md` records any client-specific quirks
    observed in `T4.2` and confirms none required a server change.
@@ -851,7 +895,13 @@ for track in [T1, T2, T3, T4, T5, T6, T7, T8]:      # in document order
     track_id[track.id] = kt_create_track(
         project_id = project.id,
         title      = track.title,
-        status     = track.status,                  # "on_track" for T1, else "blocked"
+        # No `status` argument: kt_create_track's input schema is
+        # .strict() with no such field (adversarial PR review finding —
+        # an earlier draft passed one here) — the tool derives
+        # on_track/blocked itself from whether `depends_on` tracks are
+        # already done, which is exactly "on_track for T1, else blocked"
+        # for this seed data since T1 is the only track with no
+        # dependencies.
         depends_on = [track_id[d] for d in track.depends_on],
     )
 
@@ -908,7 +958,14 @@ touched_tracks = {p["track"] for p in historical_pivots} | {
 backfilled_by_track = {track_key: [] for track_key in touched_tracks}
 
 for entry in items_completed_at_cutover:
-    kt_update_item_status(item_id = item_id[entry["item"]], status = "done")
+    # project_id is required by updateItemStatusInputSchema alongside
+    # item_id and status (adversarial PR review finding — an earlier
+    # draft omitted it here).
+    kt_update_item_status(
+        project_id = project.id,
+        item_id    = item_id[entry["item"]],
+        status     = "done",
+    )
     backfilled_by_track[entry["track"]].append(item_id[entry["item"]])
 
 for pivot in historical_pivots:                       # any real pivot that
