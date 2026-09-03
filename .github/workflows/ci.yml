@@ -1,0 +1,73 @@
+name: CI
+
+# There was no CI workflow in this repo before 2026-08-29 — every gate
+# (typecheck, lint, format, tests) only ran locally, on whoever's machine
+# happened to run it before pushing. That's a bigger gap than the
+# roadmap-drift problem this file was added to fix: a check that only
+# runs when someone remembers to run it isn't a check, it's a suggestion.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least-privilege default for a workflow that runs pull-request-controlled
+# code (npm ci, then whatever scripts that installs) — flagged by CodeRabbit
+# review: without this, a repo/org with permissive Actions defaults would
+# hand pull-request-controlled lifecycle scripts a GITHUB_TOKEN with write
+# access. Job-level `contents: read` below is what's actually needed; this
+# is the workflow-level ceiling.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: knotrack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/knotrack_test
+      DATABASE_SSL_MODE: disable
+      KNOTRACK_API_TOKENS: kt_ci_placeholder_token
+      KNOTRACK_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      # On a push event, actions/checkout has already advanced the local
+      # origin/main ref to the just-pushed commit, so `git merge-base HEAD
+      # origin/main` resolves to HEAD itself and the soft check's diff
+      # becomes HEAD..HEAD (always empty) — CodeRabbit + Codex review
+      # finding. github.event.before is the pre-push SHA and is exactly
+      # what that diff should be based against; it's empty on pull_request
+      # events, where the existing merge-base logic is already correct, so
+      # check-roadmap-drift.ts only uses this when it's actually set.
+      ROADMAP_DIFF_BASE: ${{ github.event.before }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history — check-roadmap-drift's soft check diffs against origin/main
+          persist-credentials: false # don't leave GITHUB_TOKEN in git config for later steps' scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      # Roadmap-drift check first and separately, so a doc/code mismatch
+      # is the specific, readable failure a reviewer sees — not buried
+      # under an unrelated typecheck or test failure.
+      - name: Check roadmap doesn't claim a stale tool-implementation status
+        run: npm run check-roadmap-drift
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run migrate
+      - run: npm test
