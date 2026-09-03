@@ -32,6 +32,38 @@ rather than implied by ordering.
   Item lists prior Item(s) — possibly in another Track — that must be
   `done` first, mapping to the `item_dependencies` table.
 
+## Keeping this doc honest (added 2026-08-28)
+
+This file is hand-maintained Markdown, and its `Status:` lines had drifted
+from reality more than once before anyone noticed — T2 and T3 both sat at
+a stale `blocked` header long after real work under them had shipped and
+been deployed and verified. Found each time by someone actually tracing
+code against prose, never by the doc flagging itself. Until `T8` lands
+(this doc's own second job — see above), this is the standing rule for
+keeping it from happening again:
+
+1. **A PR that completes an Item's stated acceptance criterion updates
+   that Item's Track `Status:` line in the same PR**, not as a follow-up.
+   If the PR only partially satisfies a Track (some Items done, others
+   not), say so explicitly in the `Status:` line rather than leaving the
+   old blanket status in place — "on_track, substantially complete but
+   not done" (as this pass just wrote for `T2`) beats a stale `blocked`
+   every time.
+2. **Don't trust an existing `Status:` line when starting new work that
+   depends on it.** Check the actual code the way this pass did for
+   `T1`'s `T1.6` gate (found not actually satisfied — `docs/SIGNOFF.md`
+   doesn't exist — despite `T2`/`T3` having been built on top of it
+   anyway) before treating a stated dependency as real.
+3. **The real fix is `T8`, not more discipline.** A hand-maintained
+   status doc will keep drifting no matter how careful anyone is about
+   rule 1 — that's the exact problem KnoTrack itself exists to solve for
+   its users, and there's no reason its own project should be the
+   exception. Once `T2.16` (track/item completion) and a working
+   `kt_check_drift` (`T6`) exist, `kt_get_project_status` against
+   KnoTrack's own dogfooded instance becomes the live, self-correcting
+   version of this section — worth doing even informally, ahead of the
+   full `T8` cutover, once the pieces it needs exist.
+
 ## The 14 MCP tools
 
 Referenced throughout by name; this is the full and final canonical set for
@@ -71,8 +103,23 @@ explicitly out of scope for v1 per `PRD.md` §7.
 
 ## T1 — Spec sign-off
 
-**Status:** `on_track` (the only Track not `blocked` initially — nothing
-else can start before this one).
+**Status:** `on_track`, functionally superseded by later work but **not
+formally closed** (corrected 2026-08-28 — this is not a clean flip to
+`done`; checked directly rather than assumed). `T1.1`–`T1.5` are
+satisfied: PRD, TRD, Architecture doc, DB schema, and the test-case
+matrix are all committed. `T1.6` ("cross-document consistency pass...
+zero open discrepancies... sign-off recorded in `docs/SIGNOFF.md`") is
+**not met on its own stated terms**: `docs/SIGNOFF.md` does not exist in
+this repo, and the "zero open discrepancies" bar was never actually hit
+— the "Documentation-completeness audit" and "PR #1 CodeRabbit deferrals"
+entries in this doc's backlog section (below) record discrepancies found
+*after* T1 work proceeded, several of which (the `kt_get_project_status`/
+`kt_render_roadmap`/sync-tool PRD sections) are still open today. T2/T3
+were built on top of T1 anyway because the individual specs were solid
+enough to implement against, not because `T1.6`'s gate was actually
+passed. Leaving this honestly as `on_track` rather than backdating a
+`done` that never happened — the seed-state note ("the only Track not
+`blocked` initially") is preserved below for historical context.
 **depends_on:** none.
 
 1. **T1.1 — PRD finalized and approved.** Acceptance: PRD is committed
@@ -104,8 +151,37 @@ else can start before this one).
 
 ## T2 — Core MCP server (local, Postgres)
 
-**Status:** `blocked`.
-**depends_on:** `T1`.
+**Status:** `on_track`, substantially complete but **not `done`**
+(corrected 2026-08-28, replacing a stale blanket `blocked` that hadn't
+been touched since this doc's initial draft). Per the "Status
+reconciliation" note below (already in this doc, now current as of PR
+#9): 11 of 14 tools are fully implemented and unit-tested
+(`T2.2`–`T2.10`, `T2.12`); the remaining 3 (`T2.11` `kt_check_drift`,
+`T2.13` `kt_sync_to_github`, `T2.14` `kt_sync_to_linear`) are correctly
+out of T2's real scope — full behavior is T5/T6 work — but even their
+*stub* acceptance criteria aren't fully met yet: all three currently
+return a generic `500 INTERNAL_ERROR` (`notImplementedResult` in
+`src/mcp/tool-helpers.ts`) rather than each one's specific
+bespoke-message contract (`T2.11` wants an empty result + "no heuristics
+configured"; `T2.13`/`T2.14` want "adapter not configured" after
+validating the item exists). That's a small, cheap, currently-untracked
+gap against T2's own stated acceptance criteria — worth a follow-up item
+rather than leaving implicit in a reconciliation note.
+
+<!-- STUB_TOOLS: kt_check_drift, kt_sync_to_github, kt_sync_to_linear -->
+**The line above is machine-checked, not decorative.** `npm run
+check-roadmap-drift` (wired into CI, `.github/workflows/ci.yml`) parses
+`src/mcp/tools/stubs.ts`'s actual `STUBS` array and fails the build if it
+doesn't match this exact list. This is the direct, deterministic answer
+to "how do we stop the roadmap silently going stale again" — added
+2026-08-29 after this doc's Track status headers were found drifted for
+the second time. When a stub tool ships for real, update the marker line
+above in the same PR that removes it from `stubs.ts`, or CI blocks the
+merge. Don't hand-edit this line without also verifying it against
+`stubs.ts` — that defeats the point.
+**depends_on:** `T1` (in practice, T2's implementation proceeded despite
+`T1.6` not being formally closed — see T1's status note above; recorded
+here rather than silently treating the dependency as satisfied).
 
 Ten of the 14 tools are fully implemented here. `kt_sync_to_github`,
 `kt_sync_to_linear`, `kt_record_session_summary`, and `kt_check_drift` get
@@ -180,6 +256,122 @@ it has no dedicated storage or side effects to build — it's a read query
 composed entirely from tracks/items already implemented by `T2.3`–`T2.8`,
 so it is built and unit-tested as part of `T2.15`'s hardening pass rather
 than getting its own numbered item.
+
+16. **T2.16 — Track lifecycle: switch `on_track`/`blocked`/`done` from
+    stored to derived (revised 2026-08-29 — supersedes this item's own
+    first draft from the day before; design decided and approved by
+    Paul 2026-08-29, not yet built — see the "Decided by Paul" note
+    below).** Closes a real gap found by tracing `tracks.status`
+    end to end, not merely inferred: the schema and `kt_create_track`'s
+    own blocking check (`allDependenciesDone = ... === 'done'`) both
+    treat `done` as a reachable track status, but per `docs/TRD.md` §3.5
+    exactly two things ever write `tracks.status` — `kt_create_track`
+    (initial `on_track`/`blocked`) and `kt_record_decision` (→
+    `pivot_pending`) — and **neither ever sets `done`**. No track can
+    reach `done` in normal operation today, which means no `blocked`
+    track's dependency can ever resolve either.
+
+    **Revision note:** this item's first draft (written 2026-08-28)
+    proposed patching the write side — have `kt_update_item_status`
+    recompute and cascade-update the stored `tracks.status` column in
+    the same transaction. That works, but it has the same failure shape
+    as the bug it's fixing: it depends on every future code path that
+    touches item or dependency state remembering to run the
+    recomputation, forever. Given this whole exercise started because a
+    hand-maintained status field silently went stale, shipping a second
+    hand-maintained status field (just automated instead of manual) is
+    not the strongest fix available. A harder look at the alternative:
+
+    **Revised mechanism — compute `on_track`/`blocked`/`done` at read
+    time instead of storing them:**
+    a. Drop the write side entirely for these three values. Every
+       consumer of `tracks.status` — not just `kt_list_tracks`,
+       `kt_get_track`, and `kt_get_project_status` (`T2.5`/`T2.6`/`T2.7`)
+       but also `kt_create_track` (validates `depends_on` tracks are
+       `done` before allowing an `on_track` child, via
+       `getTrackStatusesForProject`) and `kt_get_next_steps`/
+       `kt_render_roadmap` (via `getTrackSummariesForProject`) —
+       switches to computing each track's effective status via a query
+       (a CTE or equivalent) over its items' `status` and its
+       `track_dependencies` edges (adversarial PR review finding: an
+       earlier draft of this item named only the three read tools,
+       leaving these other three call sites still reading the
+       soon-to-be-stale stored column). The computation itself:
+       `done` iff the track has at least one item, every one of its
+       items is `done`, **and** every `depends_on` track is itself
+       effectively `done` (adversarial PR review finding, two distinct
+       gaps in the original draft: (1) it let a track compute `done`
+       from its own items alone even while a dependency it structurally
+       requires was still open, which the `blocked` case below already
+       treated as disqualifying — the two cases were inconsistent with
+       each other; (2) a freshly created track with zero items
+       satisfied "every item is `done`" vacuously and would read as
+       `done` before any real work existed); `blocked` iff not `done`
+       and (the track has zero items, or at least one item is not
+       `done`, or at least one `depends_on` track is not effectively
+       `done`); `on_track` otherwise. There is no cascade to write,
+       because nothing is ever wrong-until-updated — every read is
+       correct by construction, the same way `kt_get_next_steps` is
+       already a pure read over live data rather than a cached table.
+    b. `pivot_pending` is the one genuinely stateful fact here — it's an
+       explicit human/agent decision, not a function of item state — so
+       it stays a **stored** override on `tracks` (a `pivot_pending
+       boolean` or equivalent), checked first: a track with the flag set
+       shows as `pivot_pending` regardless of what (a) would otherwise
+       compute, and `kt_record_decision` remains its only writer.
+    c. This also **removes open question 2 from the first draft**
+       entirely rather than just deferring it: "does a track un-complete
+       if an item regresses" was only a hard question under the stored
+       model, where reverting requires deliberately re-triggering a
+       cascade. Under a derived model there's nothing to revert — the
+       next read simply reflects current reality, the same way it always
+       does. One fewer open decision, not because it was punted, but
+       because the better architecture makes the question not apply.
+    d. Trade-off, stated plainly rather than assumed away: `docs/TRD.md`
+       §3.5's original reason for making `tracks.status` a stored column
+       was so `kt_list_tracks`'s status filter could be "a direct `WHERE
+       tracks.status = ...` clause... no post-processing step needed."
+       A derived column can't use a plain index lookup the same way —
+       it costs a join/aggregate per read instead. At the PRD's own
+       stated v1 ceiling (200 tracks, 100 items/track per project, §6.3)
+       this is very unlikely to be measurable, but it hasn't been
+       benchmarked, and "very unlikely" is a claim to verify against the
+       `<200ms` simple-read budget (TRD §6.1) before treating it as
+       settled, not to assume.
+
+    **Decided by Paul (2026-08-29):** a `pivot_pending` track never
+    auto-resolves — it always requires an explicit action, the same way
+    entering the pivot required one. That means this item's scope grows
+    by one small, symmetric piece: `kt_record_decision` gains an
+    optional `resolves_pivot: true` input, which — in the same
+    transaction as recording the (already-required) rationale/
+    what-changed text — clears the pivot override instead of setting it.
+    No new tool; this stays inside the existing 14, matching how
+    `kt_record_decision` already both opens a pivot and now closes one,
+    each time leaving an audit-trail entry explaining why. Once cleared,
+    the track's status is whatever (a)–(c) above compute from its actual
+    item/dependency state, same as any other track.
+
+    Acceptance: a benchmark confirming the derived-status query stays
+    inside the `<200ms` simple-read budget at the PRD's stated v1 scale;
+    unit tests for a track computing `done` the instant its last item
+    does, a track with zero items never reading as `done` regardless of
+    its dependencies, a track whose own items are all `done` still
+    reading as `blocked` while a `depends_on` track is not effectively
+    `done`, a chain of dependent tracks computing `on_track` in the same
+    read with no separate propagation step, a track regressing correctly
+    with no stale cached value anywhere, a `pivot_pending` track
+    confirmed staying `pivot_pending` through item completion until
+    `kt_record_decision(resolves_pivot: true)` is called, and that call
+    both clearing the override and appearing in the Decision audit log;
+    `docs/TRD.md` §3.5 and §3.10 rewritten to describe the derived model
+    and `kt_record_decision`'s new input. depends_on: `T2.5`/`T2.6`/
+    `T2.7` (the three read tools whose queries change), `T2.3`
+    (`kt_create_track`'s dependency-completeness check reads the same
+    derived status), `T2.12` (`kt_render_roadmap`, and `kt_get_next_steps`
+    alongside it per its `T2.15` note above, both read track status via
+    `getTrackSummariesForProject`), `T2.10` (`kt_record_decision`,
+    already shipped, gains the new field).
 
 **Status reconciliation (added retroactively — this Track's items above
 describe the plan, not yet what shipped at the time this note was
@@ -256,7 +448,145 @@ edit is explicitly marked:
 
 ## T3 — Deploy + auth (Railway reference deployment)
 
-**Status:** `blocked`.
+**Status:** `on_track`, not yet `done` — **regression found AND root-caused
+2026-08-29; live data path restored, but the automated path (`T3.2`) is
+still broken and only worked around.** The 2026-08-28 status line
+claimed `T3.1`–`T3.5` "complete and verified live." That was false:
+`kt_register_project` against the live Railway deployment failed with
+`relation "projects" does not exist` (Postgres `42P01`) — the live
+database had zero tables, not even `schema_migrations`. Most likely the
+2026-08-28 pass checked `/health` (connectivity only, never schema
+state) and a successful `initialize` handshake (auth only) and treated
+that as "verified" without a real write-path tool call. `T3.5`'s
+acceptance criterion below is tightened accordingly so this can't
+recur silently.
+
+**Root cause, found by direct reproduction, not guesswork:** the
+Railway service's `deploy.startCommand` (per `get-service-config`) is
+`node dist/scripts/migrate.js && node dist/src/index.js`, and
+`index.js` clearly starts successfully every time — implying
+`migrate.js` always exits `0` — yet Railway's deploy logs never once
+showed a single line of `migrate.js`'s own console output (no
+`applying: ...`, no `no pending migrations`, no `migration failed:
+...`) across three separate deployments. To settle whether the bug was
+in KnoTrack's code or in Railway's environment, the exact compiled
+`dist/scripts/migrate.js` (byte-for-byte, same Node 20.20 version as
+the production image) was run directly against the live database —
+reached via a temporary Railway TCP proxy on the Postgres service,
+removed immediately after — and it **worked perfectly**: connected,
+applied all 5 pending migrations in order, exited 0, with full log
+output. That proved the migration code itself is correct, but left the
+platform-level "why doesn't it even run" question open.
+
+**Second half of the mystery — now also resolved, 2026-08-29.** Per
+Paul's request, the open question (why the platform silently never
+invokes `migrate.js` at all despite `deploy.startCommand` reporting the
+full chain) was put to four independent frontier models on OpenRouter,
+each reasoning separately with no visibility into the others' answers:
+`openai/gpt-5.1`, `google/gemini-3.5-flash`, `x-ai/grok-4.3`, and
+`deepseek/deepseek-v3.2` — deliberately excluding any Anthropic-family
+model as a reviewer, since the same author (this session) had already
+formed a leading theory and wanted independent, differently-trained
+eyes on it, not a rubber stamp. All four independently ranked the same
+top hypothesis: that the running container's actual entrypoint was
+fixed at build time and is not what `deploy.startCommand` currently
+reports, with a `redeploy` of a stale build snapshot as the most likely
+mechanism. None of the four treated the repo's leftover Dockerfile as
+safely inert, despite being told Railway's own API reports
+`build.builder: "RAILPACK"` — several flagged it as worth checking
+directly rather than trusting that label.
+
+That skepticism was correct, and following it up in Railway's own
+**build** logs (not deploy logs, which is why this was missed before)
+found the actual mechanism directly, not by inference: the build log
+for every one of this service's three deployments reads `[internal]
+load build definition from Dockerfile`, followed by build steps that
+match the repo's `Dockerfile` line-for-line and stage-for-stage (`FROM
+node:20.20-slim AS build` → `[build 1/8]` through `RUN npm run build` →
+`[build 8/8]`, then the `runtime` stage through `COPY migrations
+./dist/migrations` → `[runtime 6/6]`). Railway built this deployment
+directly from the repo's own checked-in `Dockerfile` — not via Railpack
+auto-detection at all — regardless of what `build.builder` reports via
+the API. That Dockerfile's own `CMD ["node", "dist/src/index.js"]`
+(deliberately written that way — its own comment says migrations "are
+run as a separate deploy-time step ... never automatically on
+container start") became the container's real entrypoint, and
+Railway's `deploy.startCommand` override never took effect on top of
+it. That fully explains every observed symptom: zero `migrate.js`
+output ever, an untouched schema, and `index.js` starting cleanly in
+~400ms every time (plain server boot, no migration round-trip). The
+mystery is closed — not "worked around," actually understood.
+
+**Fix decided 2026-08-29, via an independent multi-model council debate
+(Paul rejected the two options first proposed — editing the Dockerfile's
+own `CMD`, or deleting the Dockerfile so Railpack takes over — and asked
+for a genuinely better answer rather than a pick between them; full
+debate and reasoning in the Linear decision log §11 and
+`docs/LESSONS_LEARNED.md`'s 2026-08-29 entry):** use Railway's
+**Pre-Deploy Command** (`deploy.preDeployCommand`) — a distinct
+deploy-stage mechanism, separate from both the build path and
+`deploy.startCommand`, that runs after build/before app start "even when
+the build is skipped," and blocks the deploy outright (no retry) on
+failure. `deploy.preDeployCommand` is set to
+`["node dist/scripts/migrate.js"]`; `deploy.startCommand` is reset to a
+plain `node dist/src/index.js`. **The Dockerfile itself is deliberately
+left untouched** — the Pre-Deploy Command approach fulfills what the
+Dockerfile's own code comment already said the intent was (migrations as
+a separate deploy-time step), rather than fighting it by editing or
+removing it. Applied and verified live in Railway's stored config
+2026-08-29; not yet exercised by an actual redeploy (see `T3.7` below).
+
+**What this means for T3.2 specifically: it is not done.** Its own
+acceptance criterion is "runs clean against the Railway database with
+no manual intervention" — and manual intervention (the TCP-proxy
+workaround above) is exactly how the schema actually got created this
+time. The automated on-deploy migration path is unverified at best and
+silently broken at worst. Marking `T3.2` done would repeat the exact
+mistake this section exists to correct.
+
+Re-checked item by item, 2026-08-29:
+- `T3.1` — true. Confirmed via `mcp__Railway__get-service-config`:
+  Postgres provisioned with a persistent volume
+  (`/var/lib/postgresql/data`) and `KNOTRACK_DB_SSL_CA_BASE64` set.
+- `T3.2` — **still false.** Schema now exists in production, but only
+  because it was applied manually out-of-band (see root cause above),
+  not because the automated start-command path was proven to work. Do
+  not mark this done until a fresh redeploy's own logs show `migrate.js`
+  actually logging `applying: ...` / `no pending migrations` lines — see
+  the new `T3.7` below; that is the only evidence that the *automated*
+  path, not the earlier manual intervention, produced the schema.
+  **Correction (adversarial PR review):** this bullet previously offered
+  a second, equivalent-sounding closing condition — "or until `index.js`
+  is changed to fail loudly ... — see the new `T3.7` below" — but that
+  described `T3.8`, not `T3.7` (fixed above), and more importantly the
+  two are not equivalent evidence for `T3.2`: `T3.8`'s guard only proves
+  *some* schema is present before the server accepts traffic, which is
+  already true today because of the manual out-of-band fix — a server
+  that has always passed that check proves nothing about whether the
+  automated migration path itself works. `T3.8` is a safety net against
+  ever silently serving traffic on a stale schema again; only `T3.7`'s
+  evidence closes `T3.2`.
+- `T3.3` — true. `/health` returns `200` live.
+- `T3.4` — true: an unauthenticated `POST /mcp` returns `401` live; an
+  authenticated `initialize` call succeeds. Re-confirmed via direct
+  `curl`.
+- `T3.5` — **still not genuinely verified — corrected 2026-08-29**
+  (this line previously said "true, genuinely verified"; that was
+  wrong by this item's own acceptance criterion, caught during
+  adversarial PR review). Direct `curl` calls through the real
+  bearer-token path did return real success payloads —
+  `kt_register_project` → `{"project_id":"c38068d5-95e7-4a69-8480-8c58d8d2f253"}`,
+  `kt_create_track` → `{"track_id":"82ceffed-3e90-4f5a-8165-3ce8f20cf0f1"}`
+  — real evidence that the HTTP/auth/schema path works end to end, and
+  not nothing. But `T3.5`'s acceptance criterion explicitly requires
+  **a real MCP client**, not raw HTTP calls, and this section's own
+  root-cause writeup above already warns against exactly this shape of
+  self-graded pass (treating connectivity/auth checks as equivalent to
+  a real write-path client call). Remains open until an actual
+  MCP-speaking client (e.g. Claude Desktop or another configured
+  client) makes these calls.
+- `T3.6` — still unwritten, unchanged.
+
 **depends_on:** `T2`.
 
 1. **T3.1 — Railway project + managed Postgres provisioned.**
@@ -274,22 +604,84 @@ edit is explicitly marked:
    unauthenticated MCP request to any tool is rejected with 401; a
    request bearing a valid token (issued via the admin CLI against
    `api_tokens`) succeeds; both cases are unit-tested. depends_on: `T2.15`.
-5. **T3.5 — Bearer auth verified from one real MCP client.** Acceptance:
-   a real MCP client (e.g. Claude Desktop or Claude Code) configured with
-   an issued bearer token successfully calls `kt_register_project` and
-   `kt_create_track` against the Railway deployment.
-   depends_on: `T3.3`, `T3.4`.
+5. **T3.5 — Bearer auth AND schema verified from one real MCP client.**
+   Acceptance (tightened 2026-08-29 after the regression above): a real
+   MCP client configured with an issued bearer token successfully calls
+   `kt_register_project` and `kt_create_track` against the Railway
+   deployment **and receives the tool's real success payload, not just a
+   200 wrapper** — a generic `isError: true` response does not satisfy
+   this criterion, since that shape is exactly what a missing-schema
+   failure returns. `/health` returning `200` and a successful MCP
+   `initialize` handshake do not by themselves satisfy this item either
+   — both were true in production while `kt_register_project` was
+   failing. depends_on: `T3.3`, `T3.4`.
 6. **T3.6 — Railway reference-deployment runbook drafted.** Acceptance:
    `docs/deploy/railway.md` documents provisioning, required env vars,
    secret rotation, and rollback steps, sufficient for someone unfamiliar
    with the project to redeploy from scratch. depends_on: `T3.5`.
+7. **T3.7 — New, added 2026-08-29: prove (not just re-trigger) the
+   automated migration-on-deploy path.** Acceptance: a fresh
+   `knotrack-server` redeploy's own Railway deploy logs show
+   `migrate.js`'s own console output (`applying: ...` or `no pending
+   migrations — schema already up to date`) — not merely that the
+   server came up and `/health` returns 200. **Root cause identified
+   2026-08-29 (see T3's status above): Railway is building this service
+   from the repo's own `Dockerfile`, not via Railpack, so
+   `deploy.startCommand` is never actually applied — the Dockerfile's
+   own `CMD` is the real entrypoint and it deliberately excludes the
+   migration step.** Still not marked done: identifying the cause isn't
+   the same as observing the fix work.
+   **Fix decided and applied 2026-08-29 (see T3's status above and
+   `docs/LESSONS_LEARNED.md`): Railway's Pre-Deploy Command now runs
+   `node dist/scripts/migrate.js` as a distinct deploy-stage step,
+   `deploy.startCommand` reset to a plain server start, Dockerfile left
+   untouched.** Config change applied via the Railway API and verified
+   live in the stored config — not a guess this time. **Still not
+   closed**: this only takes effect on the *next* deployment. Close this
+   item only after a fresh `knotrack-server` redeploy's own logs
+   actually show `migrate.js`'s own console output
+   (`applying: ...` or `no pending migrations`) in the pre-deploy stage —
+   deliberately left for Paul to trigger and watch, not done in this
+   session.
+   depends_on: `T3.5`.
+8. **T3.8 — New, added 2026-08-29: fail loudly, not silently, on a
+   missing schema.** Acceptance: `src/index.ts`'s startup path checks
+   for the presence of the expected schema (e.g. querying
+   `schema_migrations` for the full expected set, or attempting a
+   trivial `SELECT 1 FROM projects LIMIT 0`) before accepting traffic,
+   and refuses to start (non-zero exit, clear log message) rather than
+   serving a broken server that returns a generic `INTERNAL_ERROR` on
+   every real tool call. This is the actual fix for the failure mode
+   this section documents: whatever caused `migrate.js` to run with no
+   observable effect, a server should never come up healthy while
+   unable to do its actual job. depends_on: `T3.2`.
+   **Implemented 2026-08-29, not yet verified live.** A new read-only
+   `getPendingMigrationFiles` (`src/db/migration-status.ts`) diffs
+   `migrations/*.sql` against `schema_migrations` (treating a missing
+   `schema_migrations` table as "everything pending," not an error) and
+   is wired into `src/index.ts` right after `buildFastify` and before
+   `app.listen(...)`: any pending file logs one `fatal`-level message
+   naming exactly which file(s) are pending and the process exits 1,
+   instead of starting and accepting traffic. Covered by a unit test
+   (`tests/unit/migration-status.test.ts`, all-applied /
+   table-missing / partially-applied cases) and confirmed by inspection
+   that `path.resolve(__dirname, '..', 'migrations')` from the compiled
+   `dist/src/index.js` resolves to `dist/migrations` — matching the
+   Dockerfile's `COPY migrations ./dist/migrations` layout — but this
+   has only been exercised locally against a scratch `dist/` tree and a
+   fake DB client, not against a real Railway redeploy with a genuinely
+   stale schema. Close this only after a live deploy actually exercises
+   the refusal path (or confirms it stays silent) against a real
+   Postgres instance.
 
 ---
 
 ## T4 — Second-client verification
 
-**Status:** `blocked`.
-**depends_on:** `T3`.
+**Status:** `blocked` (accurate — not started; confirmed 2026-08-28, not
+assumed).
+**depends_on:** `T3` (in practice `T3.5`/`T3.6` specifically — `T3.6`
+still open, see T3's status above).
 
 1. **T4.1 — Second MCP client configured against the existing server.**
    Acceptance: a second, different MCP client (e.g. Windsurf) is pointed
@@ -298,20 +690,53 @@ edit is explicitly marked:
 2. **T4.2 — Full tool-call smoke test from the second client.**
    Acceptance: from the second client, `kt_register_project`,
    `kt_create_track`, `kt_create_item`, `kt_update_item_status`,
-   `kt_get_next_steps`, `kt_check_drift`, and `kt_record_session_summary`
-   all succeed against the same instance, with results matching what
-   `T3.5` observed from the first client. depends_on: `T4.1`, `T3.5`.
+   `kt_get_next_steps`, and `kt_record_session_summary` all succeed
+   against the same instance, with results matching what `T3.5` observed
+   from the first client; `kt_check_drift` returns its documented
+   not-implemented response consistently across both clients.
+   depends_on: `T4.1`, `T3.5`.
+   **Correction (2026-08-28), resolved (adversarial PR review, flagged as
+   an unresolved decision until now):** `kt_check_drift` is a stub today
+   (`T6`, not yet built) and currently returns a `500` "not implemented"
+   result for every caller, not a real drift answer — and `T6` itself
+   depends on `T5`, which depends on `T4`, so deferring this criterion's
+   real assertion to after `T6` ships would make `T4.2` unable to close
+   until two Tracks scheduled after it are done. The acceptance above
+   now takes the other, immediately verifiable option this note
+   originally offered: `kt_check_drift`'s stub response, not a real
+   drift answer, is what both clients are checked against. The real
+   drift-answer assertion belongs to `T6`'s own acceptance criteria
+   instead, once that tool exists.
 3. **T4.3 — Client-compatibility notes documented.** Acceptance:
    `docs/client-compatibility.md` records any client-specific quirks
    observed in `T4.2` and confirms none required a server change.
    depends_on: `T4.2`.
+4. **T4.4 — OAuth-shaped connector clients checked (Grok, Perplexity)
+   (added 2026-08-28).** Not part of `T4`'s original minimum bar
+   (`T4.1` only required one second client), but scheduled here rather
+   than left floating: Paul has access to both and offered to run this
+   himself. Unlike `T4.1`/`T4.2`'s clients, Grok and Perplexity's
+   custom-connector UIs are documented as OAuth/API-Key-shaped, not a
+   raw-header config file — genuinely unverified whether either can
+   reach a static-bearer-token server at all (see
+   `docs/deploy/client-verification-runbook.md` for the exact steps and
+   what "pass" means for each). Acceptance: for each of Grok and
+   Perplexity, either (a) `kt_register_project` succeeds through it and
+   the result is added to `docs/client-compatibility.md`, or (b) it
+   cannot be made to work with a static bearer token, and that's
+   recorded as a known limitation rather than left silently untried.
+   Either outcome closes the item — this is about getting a real
+   answer, not requiring success. depends_on: `T3.5`.
 
 ---
 
 ## T5 — GitHub + Linear adapters
 
 **Status:** `blocked`.
-**depends_on:** `T4`.
+**depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
+of "the track's most recent change" and any future logic that reads
+track completion to decide what to push should be built against the
+corrected track-status model, not the currently-broken one).
 
 1. **T5.1 — Credential encryption at rest implemented.** Acceptance:
    `adapters.encrypted_credential` is written using envelope encryption
@@ -339,7 +764,11 @@ edit is explicitly marked:
 ## T6 — Drift heuristics
 
 **Status:** `blocked`.
-**depends_on:** `T5`.
+**depends_on:** `T5`, `T2.16` (added 2026-08-29 — `kt_check_drift`'s
+project-wide scan and `STALE_TRACK`/`DEPENDENCY_GAP` heuristics reason
+about track status directly; building them against the current
+never-reaches-`done` model would bake the bug into T6's own test
+fixtures).
 
 1. **T6.1 — Out-of-sequence detection implemented.** Acceptance: when an
    item is marked `done` while an item it `depends_on` (via
@@ -395,7 +824,21 @@ edit is explicitly marked:
    committed and reviewed. depends_on: `T7.4`.
 6. **T7.6 — Release commit tagged.** Acceptance: a git tag (e.g.
    `v1.0.0`) is created on the commit that passed `T7.4`, with a matching
-   `CHANGELOG.md` entry. depends_on: `T7.5`.
+   `CHANGELOG.md` entry. depends_on: `T7.5`, `T7.7`.
+7. **T7.7 — Migration rollback (`migrate down`) mode implemented +
+   verified.** Sequenced here 2026-08-28 (was `T9.x`/unscheduled in this
+   doc's backlog — "deferred until a real forward migration actually
+   needs reverting"; re-sequenced instead of left open because shipping
+   a public release whose own `T2.1` acceptance criterion ("`migrate
+   down` cleanly reverses `001_init.sql`") was never actually kept true
+   is exactly the kind of half-measure this pass is trying to close out,
+   not because a real forward migration has hit the need yet).
+   Acceptance: `scripts/migrate.ts` gains a guarded down mode that runs
+   `.down.sql` files in reverse order and removes their ledger entries;
+   run against a Railway (or Render/Fly, once `T7.1`/`T7.2` exist) copy
+   with real data, migrate up then down then up again, with a passing
+   test confirming the schema and ledger match the pre-down state
+   exactly. depends_on: `T2.1`, `T7.1`, `T7.2`.
 
 ---
 
@@ -416,13 +859,15 @@ edit is explicitly marked:
 3. **T8.3 — Historical status backfilled.** Acceptance: every completed
    Item under `T1`–`T7` is set to `done` via `kt_update_item_status`
    (there is no track-status tool by design — see the tool table above —
-   so each track's stored status is instead brought to `done` the same
-   way it would happen in normal operation: by its items all reaching
-   `done`, seeded directly at the storage layer for this one backfill
-   pass since these events predate the running instance); any real pivot
-   that occurred during T1–T7 is additionally recorded via
-   `kt_record_decision` so the audit trail isn't silently backdated.
-   depends_on: `T8.2`.
+   and per `T2.16`'s derived-status model there is nothing else to
+   write: `on_track`/`blocked`/`done` are computed at read time from
+   item status, so backfilling items to `done` is sufficient for their
+   tracks to read as `done` too, with no separate track-status seeding
+   step); any real pivot that occurred during T1–T7 is additionally
+   recorded via `kt_record_decision` so the audit trail isn't silently
+   backdated (one that has since been resolved is recorded via
+   `kt_record_decision(resolves_pivot: true)`, not left
+   `pivot_pending`). depends_on: `T8.2`, `T2.16`.
 4. **T8.4 — Session-recording cutover.** Acceptance: `CONTRIBUTING.md`
    states that all further KnoTrack development sessions are recorded via
    `kt_record_session_summary` instead of ad hoc notes, and the first
@@ -450,7 +895,13 @@ for track in [T1, T2, T3, T4, T5, T6, T7, T8]:      # in document order
     track_id[track.id] = kt_create_track(
         project_id = project.id,
         title      = track.title,
-        status     = track.status,                  # "on_track" for T1, else "blocked"
+        # No `status` argument: kt_create_track's input schema is
+        # .strict() with no such field (adversarial PR review finding —
+        # an earlier draft passed one here) — the tool derives
+        # on_track/blocked itself from whether `depends_on` tracks are
+        # already done, which is exactly "on_track for T1, else blocked"
+        # for this seed data since T1 is the only track with no
+        # dependencies.
         depends_on = [track_id[d] for d in track.depends_on],
     )
 
@@ -465,11 +916,94 @@ for track in [T1, T2, T3, T4, T5, T6, T7, T8]:      # in document order
             depends_on = [item_id[d] for d in item.depends_on],  # may reference items in earlier tracks
         )
 
+# This document only tracks Track-level status (each Track's "Status:"
+# line above), not a formal per-Item status field — so "every completed
+# Item under T1-T7" (T8.3's acceptance criterion) isn't something this
+# pseudocode can compute from `item` alone. `items_completed_at_cutover`
+# and `historical_pivots` are the operator's real, as-of-cutover inputs
+# (built by walking T1-T7 against the actual shipped state, same as any
+# other Track/Item status judgment call in this document), supplied here
+# rather than invented. Both use plain roadmap labels ("T3", "T3.2") as
+# their only identifier shape, consistently, so every lookup below goes
+# through the same track_id[...] / item_id[...] maps built above — never
+# a mix of a label used as a dict key and an object with attributes
+# (adversarial PR review finding: an earlier draft mixed `item` used both
+# as an `item_id` dict key and as an object exposing `.track_id`, which
+# would raise a TypeError/KeyError at the first entry).
+items_completed_at_cutover = [
+    # {"item": "<roadmap Item id, e.g. 'T3.2'>", "track": "<its roadmap Track id, e.g. 'T3'>"}
+    # ...
+]
+historical_pivots = [
+    # {"track": "<roadmap Track id>", "title": ..., "rationale": ...,
+    #  "what_changed": ..., "already_resolved": <bool>}
+    # ...
+]
+
+# One call per track touched by either loop below — never a single call
+# spanning T1-T8: kt_record_session_summary requires every id in
+# `items_touched` to belong to the single `track_id` passed alongside it
+# (src/mcp/tools/record-session-summary.ts rejects a mixed-track list,
+# adversarial PR review finding on an earlier draft of this pseudocode).
+# Seeding every touched track's key with `[]` up front — instead of only
+# adding a key when an item is backfilled into it — means a track whose
+# only T1-T7 activity was a pivot (no completed item) still gets a
+# session-summary entry below (adversarial PR review finding: a prior
+# draft only populated this dict from the item-backfill loop, so a
+# pivot-only track's kt_record_decision call had no matching
+# kt_record_session_summary at all).
+touched_tracks = {p["track"] for p in historical_pivots} | {
+    e["track"] for e in items_completed_at_cutover
+}
+backfilled_by_track = {track_key: [] for track_key in touched_tracks}
+
+for entry in items_completed_at_cutover:
+    # project_id is required by updateItemStatusInputSchema alongside
+    # item_id and status (adversarial PR review finding — an earlier
+    # draft omitted it here).
+    kt_update_item_status(
+        project_id = project.id,
+        item_id    = item_id[entry["item"]],
+        status     = "done",
+    )
+    backfilled_by_track[entry["track"]].append(item_id[entry["item"]])
+
+for pivot in historical_pivots:                       # any real pivot that
+    kt_record_decision(                               # occurred during T1-T7.
+        project_id     = project.id,                  # kt_record_decision's
+        track_id       = track_id[pivot["track"]],    # actual (already-shipped,
+        title          = pivot["title"],              # T2.10) contract requires
+        rationale      = pivot["rationale"],          # all four of project_id/
+        what_changed   = pivot["what_changed"],       # track_id/title/rationale/
+        resolves_pivot = pivot["already_resolved"],   # what_changed — there's no
+    )                                                  # free-text-only form
+    # `resolves_pivot` is T2.16's addition to this call — safe to rely on
+    # here because T8.3 depends_on T2.16 (both land, in order, before T8
+    # ever runs).
+
+# T8.3's acceptance criterion is the loops above actually running — these
+# summaries are a record of that having happened, not a substitute for it
+# (adversarial PR review finding: an earlier draft created Tracks/Items
+# and then wrote a summary claiming the backfill happened without ever
+# calling kt_update_item_status/kt_record_decision). `items_touched=[]` is
+# valid for a pivot-only track — the schema defaults it to an empty array
+# and only validates track membership when the list is non-empty.
+for track_key, items in backfilled_by_track.items():
+    kt_record_session_summary(
+        project_id    = project.id,
+        track_id      = track_id[track_key],
+        summary_text  = f"Backfilled {track_key} historical status to match "
+                         "reality as of the cutover date.",
+        files_touched = ["docs/ROADMAP.md"],
+        items_touched = items,
+    )
+
 kt_record_session_summary(
     project_id    = project.id,
+    track_id      = track_id["T8"],
     summary_text  = "Seeded KnoTrack's own roadmap (docs/ROADMAP.md) as the "
-                     "initial Tracks/Items; backfilled T1-T7 status to match "
-                     "reality as of the cutover date.",
+                     "initial Tracks/Items; T1-T7 historical status backfilled "
+                     "and recorded per-track above.",
     files_touched = ["docs/ROADMAP.md"],
     items_touched = [item_id["T8.2"], item_id["T8.3"]],
 )
@@ -593,24 +1127,36 @@ build.
 
 **Deferred from PR #1's CodeRabbit review round (2026-08-23/24) — architecture/
 scope decisions, not bugs, per the `clear-decisions` walkthrough:**
-- **`T9.x` (new, unscheduled) — a path to unblock a `blocked` track.**
-  `kt_create_track` can set a track to `blocked` when a declared dependency
-  isn't `done`, but there is no write path from `blocked` back to
-  `on_track` or `done` once created — dependents stay blocked permanently.
-  Deferred until a real caller actually hits this (no current tool
-  triggers the transition back).
-- **`T9.x` (new, unscheduled) — `@modelcontextprotocol/sdk` v1 → v2
-  migration.** Needed for `server/discover` and the 2026-07-28 protocol
-  revision's stateless discovery mechanism. Breaking (modular v2 packages,
-  ESM-first, Zod `^4.2.0` requirement), touches every tool registration and
-  the core transport. Deferred indefinitely — no current forcing need.
-- **`T9.x` (new, unscheduled) — migration rollback (`down`) mode.**
-  `scripts/migrate.ts` only applies migrations forward; there's no guarded
-  mode to run `.down.sql` files in reverse and remove their ledger entries.
-  Note this isn't just a TRD gap: `T2.1` above states `migrate down`
-  cleanly reverses `001_init.sql` as its own acceptance criterion, so this
-  was always intended, not merely documented aspirationally. Deferred
-  until a real forward migration actually needs reverting.
+- **Superseded 2026-08-28, now scheduled as `T2.16` — a path to unblock
+  a `blocked` track.** Originally logged here as `T9.x`/unscheduled with
+  "deferred until a real caller actually hits this." Re-investigated
+  because the categorization itself was checked rather than trusted: the
+  real gap is one level deeper than this bullet said — no track can ever
+  reach `done` at all in normal operation (see `T2.16` above for the
+  full trace through `docs/TRD.md` §3.5 and `kt_create_track`'s own
+  logic), which is *why* nothing ever unblocks a dependent. Design
+  revised again 2026-08-29 and decided by Paul the same day (derived
+  status, not a stored+cascade patch, plus the `resolves_pivot`
+  mechanism — see `T2.16`'s revision note); not yet built.
+- **Still unscheduled, but with a stated trigger now (2026-08-28) —
+  `@modelcontextprotocol/sdk` v1 → v2 migration.** Needed for
+  `server/discover` and the 2026-07-28 protocol revision's stateless
+  discovery mechanism. Breaking (modular v2 packages, ESM-first, Zod
+  `^4.2.0` requirement), touches every tool registration and the core
+  transport — genuinely too large to schedule speculatively. Revisit
+  at `T4` (second-client verification) and `T7.1`/`T7.2` (the two
+  untested deploy paths): if any client KnoTrack claims compatibility
+  with actually requires `server/discover` to connect at all, that's
+  the forcing function; if every verification passes on v1, stays
+  deferred past `v1.0.0`.
+- **Superseded 2026-08-28, now scheduled as `T7.7` — migration rollback
+  (`down`) mode.** Was `T9.x`/unscheduled, "deferred until a real
+  forward migration actually needs reverting." Re-sequenced into
+  release prep instead: `T2.1`'s own acceptance criterion already
+  promised this works, a public v1.0.0 shouldn't ship having quietly
+  dropped that promise, and there's no reason to wait for an accidental
+  forcing case when it can be built and verified deliberately as part
+  of release hardening.
 - **`T9.x` (new, unscheduled) — finish propagating the source_type/
   source_ref registration model through the remaining docs.** Commits
   `5809ae4`/`bca45ff` fixed the "13 tools"/ID-format/cross-track-deps/
