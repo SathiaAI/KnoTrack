@@ -28,18 +28,23 @@ services live in it:
 untagged, which Docker/GHCR resolve as `:latest`.** Verified directly against
 the live `Postgres` service's stored config (`ghcr.io/railwayapp-templates/postgres-ssl`,
 no tag) — so a future upstream push to `latest` could change the running
-image on this project's next redeploy without anyone choosing that. Pin a
-tested minor-version tag (e.g. `:17`) or, preferably, an immutable digest
-(`ghcr.io/railwayapp-templates/postgres-ssl@sha256:...`) instead, both in any
-new service you provision from this table and (separately, via
-`update-service`, not covered by this docs-only runbook) on the existing live
-service.
+image on this project's next redeploy without anyone choosing that. **Do not
+pin to a bare major-version tag like `:17` either** — per this image's own
+tagging scheme, major-version tags themselves float and auto-track the latest
+minor release, so `:17` carries the same "changes out from under you"
+problem as no tag at all, just on a slower cadence. Pin an exact minor
+version instead (e.g. `:17.6`, after validating it against this project) or,
+preferably, an immutable digest
+(`ghcr.io/railwayapp-templates/postgres-ssl@sha256:...`), both in any new
+service you provision from this table and (separately, via `update-service`,
+not covered by this docs-only runbook) on the existing live service.
 
 **To provision from scratch:**
 
 1. Create a Railway project, add a new service from the
-   `railwayapp-templates/postgres-ssl` Docker image — **pinned to a specific
-   tag or digest, not the bare `.../postgres-ssl` reference** (see the
+   `railwayapp-templates/postgres-ssl` Docker image — **pinned to an exact
+   minor-version tag (e.g. `:17.6`) or an immutable digest, never a bare
+   major-version tag like `:17` and never the untagged reference** (see the
    callout above) — and not Railway's default "Add Postgres" plugin either,
    since that one doesn't support pinning a custom CA the way this project
    needs (see §3). Attach a persistent volume mounted at
@@ -76,7 +81,26 @@ service.
      (`postgres` on this project, confirmed via `get-service-config`'s
      `networking.privateNetworkEndpoint`), e.g.
      `postgresql://${{POSTGRES_USER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/${{POSTGRES_DB}}` —
-     never a value typed out by hand.
+     never a value typed out by hand. **This fallback is only safe if
+     `POSTGRES_PASSWORD` itself is URI-safe.** A raw `POSTGRES_PASSWORD`
+     containing a URI-reserved character (`:`, `/`, `?`, `#`, `[`, `]`,
+     `@`, and the sub-delimiters) breaks `node-postgres`'s connection-string
+     parser when interpolated directly, exactly as it would in `DATABASE_URL`
+     itself — this isn't unique to the fallback. Prefer Railway's template
+     `secret()` function with an explicit alphanumeric-only alphabet (e.g.
+     `${{secret(32, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")}}`)
+     over the plain "generate value" button when setting `POSTGRES_PASSWORD`,
+     so this fallback composition is safe to use as written. This app only
+     ever accepts a single `DATABASE_URL` connection string — `src/db/pool.ts`
+     always passes `connectionString`, never discrete host/user/password
+     fields — so there's no way to sidestep URI parsing by configuring
+     separate variables instead. Railway's own template language has no
+     percent-encoding function to fall back on either, so if you don't
+     control the generation alphabet: read the actual `POSTGRES_PASSWORD`
+     value, percent-encode it yourself (`encodeURIComponent` in a Node
+     REPL, or equivalent), and paste the resulting **already-encoded**
+     string into a hand-typed `DATABASE_URL` value on the `knotrack-server`
+     service — a one-time manual step, not a live template reference.
 2. Add a second service to the same project from GitHub, pointed at
    `SathiaAI/KnoTrack`, branch `main`. **Do not delete or edit the repo's
    `Dockerfile`** — Railway will always build from a checked-in
@@ -154,6 +178,23 @@ directly — you need a sandbox/host with general TCP egress first.**
    failing. (There is no notification when the image silently rotates the
    root out from under a stale pinned value; the failure mode is TLS
    handshake errors on both the app and `scripts/migrate.ts`.)
+
+   **The renewal handoff, concretely — do these in this order, not
+   independently:** (a) trigger or observe the renewal — it happens on the
+   Postgres service's own restart/redeploy once the leaf is within 30 days
+   of expiring, so either wait for that to occur naturally or force it with
+   an explicit `redeploy` of the `Postgres` service if you want to renew on
+   your own schedule ahead of the window closing; (b) re-run this section's
+   extraction procedure (steps 1–7) to pull the *new* root CA — the old
+   pinned value is now wrong the moment renewal happens, not before; (c)
+   update `KNOTRACK_DB_SSL_CA_BASE64` on `knotrack-server` with the new
+   value; (d) redeploy `knotrack-server` so it picks up the new variable —
+   updating a Railway variable does not itself restart a running
+   container; (e) verify `GET /health` returns `200` with `"db":"ok"`
+   afterward. Doing (a) without (b)–(e) is exactly the silent-failure mode
+   this note exists to prevent: the Postgres side renews fine, and
+   `knotrack-server` starts rejecting every connection with a TLS error
+   until someone notices and works backward to this section.
 5. Validate the extracted PEM before using it — this repo's own
    `decodeAndValidateSslCa()` (`src/db/ssl-config.ts`) does a real
    `X509Certificate` parse, not just a base64/shape check; run it against
@@ -356,12 +397,25 @@ rather than leaving some on the old key and some on the new one. **Sequence
    every just-rotated credential permanently undecryptable).
 2. Quiesce writes to the `adapters` table — stop `knotrack-server` or
    otherwise pause traffic that could call `kt_register_project` mid-run.
-3. Run the script against the deployed image:
-   `node dist/scripts/rotate-encryption-key.js` (the production runtime
-   has no `tsx`, same constraint as §2's token generator — local dev uses
-   `npm run rotate-encryption-key` instead). It also prints the new key
-   back to stdout on success, as a second line of defense against losing
-   the value from step 1.
+3. **Run this from your own machine via `docker run`, never as a Railway
+   deployment, service, or one-off command.** The script deliberately
+   prints the new key back to stdout on success (a second line of defense
+   against losing the value from step 1) — but Railway captures every
+   service's stdout into its own log system, retained 7–90 days depending
+   on plan and visible to anyone with dashboard/log access. Printing a
+   currently-live encryption key into that retention window is a real
+   credential exposure this doc should not walk someone into. Instead:
+   `docker run --rm --env-file .env -e KNOTRACK_ENCRYPTION_KEY_NEW=<value>
+   <image> node dist/scripts/rotate-encryption-key.js` from a machine with
+   network access to the Railway Postgres instance (via a temporary TCP
+   proxy, same as §3's CA extraction) — the production runtime has no
+   `tsx`, same constraint as §2's token generator, so it must be the
+   compiled `dist/scripts/rotate-encryption-key.js`, not the `.ts` source
+   (local dev, against a local database, can use `npm run
+   rotate-encryption-key` instead). Copy the printed key from your own
+   terminal into wherever you store it durably, then close that terminal
+   session — don't leave it sitting in scrollback or shell history longer
+   than it takes to do that.
 4. Set `KNOTRACK_ENCRYPTION_KEY` to the new value in Railway and redeploy
    `knotrack-server` — **do not restart the server with the old key still
    configured** once the script has committed; the database now holds
