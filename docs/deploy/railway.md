@@ -360,6 +360,18 @@ breaking the app outright. **Correct sequence:**
    re-resolves; confirm connectivity (`/health` reporting `db: ok`) before
    considering the rotation done.
 
+**If `knotrack-server`'s `DATABASE_URL` was set via §1's hand-typed fallback
+instead of the `${{Postgres.DATABASE_URL}}` reference, step 3 above does
+nothing for you.** A hand-typed, already-percent-encoded `DATABASE_URL` is a
+static string, not a live template reference — it does not "re-resolve" on
+redeploy, so `knotrack-server` keeps connecting with the old (now wrong)
+password until someone edits it by hand. In that case, insert this between
+steps 2 and 3: re-percent-encode the *new* `POSTGRES_PASSWORD` the same way
+§1 describes, paste the resulting value into a new hand-typed `DATABASE_URL`
+on `knotrack-server`, then proceed to redeploy. Skipping this leaves the
+server down with a TLS-looking-like-auth failure that traces back to a
+stale static connection string, not the CA or SSL mode.
+
 **`KNOTRACK_DB_SSL_CA_BASE64` — expect to rotate this periodically, not
 just on a volume recreation.** §3's extraction procedure now documents
 (corrected 2026-09-03) that the postgres-ssl image regenerates *both* the
@@ -404,14 +416,31 @@ rather than leaving some on the old key and some on the new one. **Sequence
    service's stdout into its own log system, retained 7–90 days depending
    on plan and visible to anyone with dashboard/log access. Printing a
    currently-live encryption key into that retention window is a real
-   credential exposure this doc should not walk someone into. Instead:
-   `docker run --rm --env-file .env -e KNOTRACK_ENCRYPTION_KEY_NEW=<value>
-   <image> node dist/scripts/rotate-encryption-key.js` from a machine with
-   network access to the Railway Postgres instance (via a temporary TCP
-   proxy, same as §3's CA extraction) — the production runtime has no
-   `tsx`, same constraint as §2's token generator, so it must be the
-   compiled `dist/scripts/rotate-encryption-key.js`, not the `.ts` source
-   (local dev, against a local database, can use `npm run
+   credential exposure this doc should not walk someone into. Open a
+   temporary TCP proxy on the `Postgres` service first (§3, step 1) — your
+   local `.env`'s own `DATABASE_URL` is Railway's *private*-network
+   connection string and is unreachable from your machine, so it cannot be
+   used unchanged here; the command below overrides it to point at the
+   proxy instead:
+   ```text
+   docker run --rm --env-file .env \
+     -e DATABASE_URL="postgresql://<POSTGRES_USER>:<url-encoded-password>@<proxy-host>:<proxy-port>/<POSTGRES_DB>" \
+     -e DATABASE_SSL_MODE=require \
+     -e KNOTRACK_DB_SSL_CA_BASE64="<same value already set on knotrack-server>" \
+     -e KNOTRACK_ENCRYPTION_KEY_NEW \
+     <image> node dist/scripts/rotate-encryption-key.js
+   ```
+   Two things to get right: the `<POSTGRES_USER>`/password/proxy host and
+   port come from the temporary proxy you just opened, not from any value
+   already in `.env`; and `-e KNOTRACK_ENCRYPTION_KEY_NEW` is deliberately
+   given **with no `=value`** — that tells Docker to pass through the
+   variable already `export`ed in step 1 from your own shell's
+   environment, so the key value itself never has to be retyped into the
+   command line, where it would land in shell history and be visible to
+   anyone who can run `docker inspect`/`ps` on that host. The production
+   runtime has no `tsx`, same constraint as §2's token generator, so it
+   must be the compiled `dist/scripts/rotate-encryption-key.js`, not the
+   `.ts` source (local dev, against a local database, can use `npm run
    rotate-encryption-key` instead). Copy the printed key from your own
    terminal into wherever you store it durably, then close that terminal
    session — don't leave it sitting in scrollback or shell history longer
