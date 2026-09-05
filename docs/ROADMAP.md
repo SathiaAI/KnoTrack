@@ -448,7 +448,15 @@ edit is explicitly marked:
 
 ## T3 — Deploy + auth (Railway reference deployment)
 
-**Status:** `on_track`, not yet `done` — **regression found AND root-caused
+**Status update, 2026-09-03: `T3.1`–`T3.4`, `T3.7`, `T3.8` all `done`,
+verified by a real fresh redeploy's logs (see the T3.7/T3.8 items below).
+`T3.6` (this runbook) also `done`. Only `T3.5` remains — needs a real MCP
+client under Paul's control, not something this session can complete on its
+own.** Everything below this line is the historical root-cause investigation
+and fix that got T3 to this point — preserved for the record, not still the
+live status.
+
+**Status (historical, 2026-08-29):** `on_track`, not yet `done` — **regression found AND root-caused
 2026-08-29; live data path restored, but the automated path (`T3.2`) is
 still broken and only worked around.** The 2026-08-28 status line
 claimed `T3.1`–`T3.5` "complete and verified live." That was false:
@@ -536,25 +544,47 @@ a separate deploy-time step), rather than fighting it by editing or
 removing it. Applied and verified live in Railway's stored config
 2026-08-29; not yet exercised by an actual redeploy (see `T3.7` below).
 
-**What this means for T3.2 specifically: it is not done.** Its own
+**Update 2026-09-03: T3.2 is now done — the automated path has been proven, not
+assumed.** PR #12 and PR #13 (T3.7/T3.8) merged into `main` (`035888b1`, then
+`1b678490`), and Railway's GitHub auto-deploy fired immediately on each merge —
+no manual redeploy trigger was needed or used. The PR #13 merge's own deployment
+(`f9e9ada5-b145-4360-9c23-5ec2d70ced90`, commit `1b678490`, 2026-09-03T03:03Z)
+is a **fresh, automated redeploy**, and its deploy logs show exactly the
+evidence this item requires: a distinct pre-deploy container ran first
+(`Starting Container` → `skip (already applied): 001_init.sql` ... `005_tracks_sync_timestamps.sql`
+→ `no pending migrations — schema already up to date` → `Stopping Container`),
+*then* the real app container started (`Server listening at http://...:8080`)
+and the healthcheck passed. This is `migrate.js`'s own console output, from
+the automated Pre-Deploy Command path, on a real redeploy — not the earlier
+manual out-of-band fix, and not inferred from `/health` alone. `GET /health`
+was independently re-checked live immediately after (`{"status":"ok",...,"db":"ok"}`,
+`200`). **T3.2 done.**
+
+**(Historical conclusion, 2026-08-29 — superseded by the 2026-09-03 update
+immediately above; preserved verbatim for the record, not the current
+status.)** What this meant for T3.2 at the time: it was not done. Its own
 acceptance criterion is "runs clean against the Railway database with
 no manual intervention" — and manual intervention (the TCP-proxy
-workaround above) is exactly how the schema actually got created this
-time. The automated on-deploy migration path is unverified at best and
-silently broken at worst. Marking `T3.2` done would repeat the exact
-mistake this section exists to correct.
+workaround above) is exactly how the schema actually got created that
+time. The automated on-deploy migration path was unverified at best and
+silently broken at worst. Marking `T3.2` done at that point would have
+repeated the exact mistake this section exists to correct. **This is no
+longer the case as of 2026-09-03** — see the update above and the
+item-by-item recheck immediately below, both of which supersede this
+paragraph.
 
 Re-checked item by item, 2026-08-29:
 - `T3.1` — true. Confirmed via `mcp__Railway__get-service-config`:
   Postgres provisioned with a persistent volume
   (`/var/lib/postgresql/data`) and `KNOTRACK_DB_SSL_CA_BASE64` set.
-- `T3.2` — **still false.** Schema now exists in production, but only
-  because it was applied manually out-of-band (see root cause above),
-  not because the automated start-command path was proven to work. Do
-  not mark this done until a fresh redeploy's own logs show `migrate.js`
-  actually logging `applying: ...` / `no pending migrations` lines — see
-  the new `T3.7` below; that is the only evidence that the *automated*
-  path, not the earlier manual intervention, produced the schema.
+- `T3.2` — **true as of 2026-09-03.** A fresh, automated redeploy
+  (deployment `f9e9ada5`, commit `1b678490`, triggered by Railway's own
+  GitHub auto-deploy on the PR #13 merge, not a manual trigger) logged
+  `migrate.js`'s own console output in the pre-deploy stage
+  (`skip (already applied): ...` for all 5 migrations, then
+  `no pending migrations — schema already up to date`) before the app
+  container started — see `T3.7` below for the full evidence. This is
+  the automated path, not the earlier manual out-of-band fix.
   **Correction (adversarial PR review):** this bullet previously offered
   a second, equivalent-sounding closing condition — "or until `index.js`
   is changed to fail loudly ... — see the new `T3.7` below" — but that
@@ -585,7 +615,10 @@ Re-checked item by item, 2026-08-29:
   a real write-path client call). Remains open until an actual
   MCP-speaking client (e.g. Claude Desktop or another configured
   client) makes these calls.
-- `T3.6` — still unwritten, unchanged.
+- `T3.6` — **done as of 2026-09-03**: `docs/deploy/railway.md` written,
+  covering provisioning, required env vars, secret rotation (including
+  an honest statement of what is *not* yet safely rotatable — see the
+  doc's own Secret Rotation section), and rollback.
 
 **depends_on:** `T2`.
 
@@ -636,13 +669,24 @@ Re-checked item by item, 2026-08-29:
    `node dist/scripts/migrate.js` as a distinct deploy-stage step,
    `deploy.startCommand` reset to a plain server start, Dockerfile left
    untouched.** Config change applied via the Railway API and verified
-   live in the stored config — not a guess this time. **Still not
-   closed**: this only takes effect on the *next* deployment. Close this
-   item only after a fresh `knotrack-server` redeploy's own logs
-   actually show `migrate.js`'s own console output
-   (`applying: ...` or `no pending migrations`) in the pre-deploy stage —
-   deliberately left for Paul to trigger and watch, not done in this
-   session.
+   live in the stored config — not a guess this time.
+
+   **Closed 2026-09-03.** Railway's GitHub auto-deploy fired on its own
+   when Paul merged PR #12 then PR #13 — no manual redeploy trigger was
+   needed. The PR #13 merge's deployment (`f9e9ada5-b145-4360-9c23-5ec2d70ced90`,
+   commit `1b678490`, `2026-09-03T03:03:31Z`–`03:03:57Z`) is a genuinely
+   fresh redeploy, and its own deploy logs show, in order: `Starting
+   Container` (the pre-deploy container) → `skip (already applied):
+   001_init.sql` through `005_tracks_sync_timestamps.sql` → `no pending
+   migrations — schema already up to date` → `Stopping Container` (the
+   pre-deploy container exiting cleanly) → `Server listening at
+   http://...:8080` (the real app container) → healthcheck succeeded.
+   This is exactly this item's required evidence — `migrate.js`'s own
+   console output in a distinct pre-deploy stage on a fresh, automated
+   redeploy — not merely a healthy `/health`. Independently re-confirmed
+   live via `curl https://knotrack-server-production.up.railway.app/health`
+   → `200 {"status":"ok",...,"db":"ok"}`. Full log evidence and mechanism
+   are also written up in `docs/deploy/railway.md` (T3.6, this same date).
    depends_on: `T3.5`.
 8. **T3.8 — New, added 2026-08-29: fail loudly, not silently, on a
    missing schema.** Acceptance: `src/index.ts`'s startup path checks
@@ -667,12 +711,24 @@ Re-checked item by item, 2026-08-29:
    table-missing / partially-applied cases) and confirmed by inspection
    that `path.resolve(__dirname, '..', 'migrations')` from the compiled
    `dist/src/index.js` resolves to `dist/migrations` — matching the
-   Dockerfile's `COPY migrations ./dist/migrations` layout — but this
-   has only been exercised locally against a scratch `dist/` tree and a
-   fake DB client, not against a real Railway redeploy with a genuinely
-   stale schema. Close this only after a live deploy actually exercises
-   the refusal path (or confirms it stays silent) against a real
-   Postgres instance.
+   Dockerfile's `COPY migrations ./dist/migrations` layout.
+
+   **Closed 2026-09-03 — the "stays silent" branch, specifically.** The
+   same fresh redeploy that closed `T3.7` (`f9e9ada5`, commit `1b678490`)
+   is real evidence for this item too: the schema was genuinely up to
+   date (all 5 migrations already applied), the boot-time guard ran as
+   part of `src/index.ts`'s startup path against the real Railway
+   Postgres instance, logged no `fatal` refusal message, and the server
+   went on to accept traffic (`Server listening...`, healthcheck 200).
+   That is exactly this item's "or confirms it stays silent" acceptance
+   branch, observed live — not just locally against a scratch `dist/`
+   tree and a fake DB client. **The other branch (the guard actually
+   refusing to start on a genuinely stale schema) has still never been
+   exercised against a real Railway deploy** — only the unit tests cover
+   that path directly. Noted here rather than silently treated as
+   equivalent: this item's acceptance criterion offers either branch as
+   sufficient, and the silent-pass branch is what actually happened, so
+   the item is closed on that basis, not on the untested refusal branch.
 
 ---
 
@@ -680,8 +736,9 @@ Re-checked item by item, 2026-08-29:
 
 **Status:** `blocked` (accurate — not started; confirmed 2026-08-28, not
 assumed).
-**depends_on:** `T3` (in practice `T3.5`/`T3.6` specifically — `T3.6`
-still open, see T3's status above).
+**depends_on:** `T3` (in practice `T3.5` specifically as of 2026-09-03 —
+`T3.6` is now done, see T3's status above; `T3.5` remains open and is the
+only thing still blocking `T4`).
 
 1. **T4.1 — Second MCP client configured against the existing server.**
    Acceptance: a second, different MCP client (e.g. Windsurf) is pointed
