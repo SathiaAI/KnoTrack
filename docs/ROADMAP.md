@@ -448,13 +448,28 @@ edit is explicitly marked:
 
 ## T3 — Deploy + auth (Railway reference deployment)
 
-**Status update, 2026-09-03: `T3.1`–`T3.4`, `T3.7`, `T3.8` all `done`,
-verified by a real fresh redeploy's logs (see the T3.7/T3.8 items below).
-`T3.6` (this runbook) also `done`. Only `T3.5` remains — needs a real MCP
-client under Paul's control, not something this session can complete on its
-own.** Everything below this line is the historical root-cause investigation
-and fix that got T3 to this point — preserved for the record, not still the
-live status.
+**Status update, 2026-09-05: `T3` is fully `done`.** `T3.1`–`T3.4`, `T3.6`,
+`T3.7`, `T3.8` were already `done` as of 2026-09-03 (verified by a real
+fresh redeploy's logs — see the T3.7/T3.8 items below). **`T3.5` closed
+2026-09-05**, the same day PR #14 (`T3.6`) was merged (`865996e4`): a real
+MCP client — the official `@modelcontextprotocol/sdk` TypeScript client,
+not a hand-rolled HTTP call — connected to
+`https://knotrack-server-production.up.railway.app/mcp` with a freshly
+issued bearer token, performed a genuine `initialize` handshake (server
+negotiated `serverInfo: {"name":"knotrack","version":"0.1.0"}`), listed
+all 14 tools via `tools/list`, then called `kt_register_project` and
+`kt_create_track` and received real success payloads —
+`{"project_id":"1a493c6f-b2cf-4349-9b8b-bffcdd264370"}` and
+`{"track_id":"cc592cc1-4ce4-4276-8a8d-4b3cb6ccadc8"}` — not the generic
+`isError: true` wrapper a missing-schema failure would have returned.
+Run from Paul's own machine (via the Cowork desktop bridge), at his
+explicit instruction to execute it directly rather than have him drive a
+client by hand — see the item-level note below for the full mechanics and
+why an unattended session isn't normally trusted to self-certify this
+item. **`T4` (second-client verification) is now unblocked.** Everything
+below this line is the historical root-cause investigation and fix that
+got T3 to this point — preserved for the record, not still the live
+status.
 
 **Status (historical, 2026-08-29):** `on_track`, not yet `done` — **regression found AND root-caused
 2026-08-29; live data path restored, but the automated path (`T3.2`) is
@@ -600,21 +615,35 @@ Re-checked item by item, 2026-08-29:
 - `T3.4` — true: an unauthenticated `POST /mcp` returns `401` live; an
   authenticated `initialize` call succeeds. Re-confirmed via direct
   `curl`.
-- `T3.5` — **still not genuinely verified — corrected 2026-08-29**
-  (this line previously said "true, genuinely verified"; that was
-  wrong by this item's own acceptance criterion, caught during
-  adversarial PR review). Direct `curl` calls through the real
-  bearer-token path did return real success payloads —
-  `kt_register_project` → `{"project_id":"c38068d5-95e7-4a69-8480-8c58d8d2f253"}`,
-  `kt_create_track` → `{"track_id":"82ceffed-3e90-4f5a-8165-3ce8f20cf0f1"}`
-  — real evidence that the HTTP/auth/schema path works end to end, and
-  not nothing. But `T3.5`'s acceptance criterion explicitly requires
-  **a real MCP client**, not raw HTTP calls, and this section's own
-  root-cause writeup above already warns against exactly this shape of
-  self-graded pass (treating connectivity/auth checks as equivalent to
-  a real write-path client call). Remains open until an actual
-  MCP-speaking client (e.g. Claude Desktop or another configured
-  client) makes these calls.
+- `T3.5` — **true as of 2026-09-05.** (This bullet previously said "still
+  not genuinely verified — corrected 2026-08-29," after an earlier draft
+  wrongly treated direct `curl` calls as sufficient; that correction is
+  preserved in git history, not restated here.) Closed by a real MCP
+  client — `@modelcontextprotocol/sdk`'s TypeScript `Client` class
+  (v1.30.0) with `StreamableHTTPClientTransport`, run from a Node.js
+  process on Paul's own machine — performing an actual `initialize`
+  handshake, `tools/list`, and `tools/call` for both
+  `kt_register_project` and `kt_create_track` against
+  `https://knotrack-server-production.up.railway.app/mcp`, receiving
+  real success payloads (`project_id`, `track_id`), not `isError: true`.
+  A fresh bearer token was issued for this (via
+  `scripts/generate-token.ts`'s algorithm) and set as
+  `knotrack-server`'s `KNOTRACK_API_TOKENS`, which replaced the
+  previously-issued token from the 2026-08-29 verification pass — that
+  older token had never been wired into any client config (confirmed by
+  searching Paul's machine for it before rotating) and its replacement
+  triggered the automated redeploy this same tool call already needed.
+  **Who ran this and why it counts:** this specific run was executed by
+  the session, not by Paul at a keyboard, per Paul's explicit
+  instruction ("You run it... You have full control and don't need me
+  for anything") after being offered the choice between that and doing
+  it himself — recorded because this item's acceptance criterion exists
+  specifically to prevent a session from self-certifying its own work
+  via a shortcut (see the regression this section documents), and using
+  genuine MCP-protocol client software on a human-controlled machine,
+  under an explicit human decision to delegate the keystrokes (not the
+  judgment call), is the reasoning for why this still satisfies the
+  intent rather than repeating that mistake.
 - `T3.6` — **done as of 2026-09-03**: `docs/deploy/railway.md` written,
   covering provisioning, required env vars, secret rotation (including
   an honest statement of what is *not* yet safely rotatable — see the
@@ -648,6 +677,12 @@ Re-checked item by item, 2026-08-29:
    `initialize` handshake do not by themselves satisfy this item either
    — both were true in production while `kt_register_project` was
    failing. depends_on: `T3.3`, `T3.4`.
+
+   **Closed 2026-09-05.** See T3's status update and the item-by-item
+   recheck above for the full evidence: a real `@modelcontextprotocol/sdk`
+   client, not `curl`, made the `initialize` → `tools/list` →
+   `tools/call` round trip and got back real `project_id`/`track_id`
+   payloads for both required tools.
 6. **T3.6 — Railway reference-deployment runbook drafted.** Acceptance:
    `docs/deploy/railway.md` documents provisioning, required env vars,
    secret rotation, and rollback steps, sufficient for someone unfamiliar
@@ -734,11 +769,9 @@ Re-checked item by item, 2026-08-29:
 
 ## T4 — Second-client verification
 
-**Status:** `blocked` (accurate — not started; confirmed 2026-08-28, not
-assumed).
-**depends_on:** `T3` (in practice `T3.5` specifically as of 2026-09-03 —
-`T3.6` is now done, see T3's status above; `T3.5` remains open and is the
-only thing still blocking `T4`).
+**Status:** `on_track` as of 2026-09-05 — `T3` (all of it, including
+`T3.5`) is now `done`, so `T4` is unblocked. Not yet started.
+**depends_on:** `T3` — satisfied.
 
 1. **T4.1 — Second MCP client configured against the existing server.**
    Acceptance: a second, different MCP client (e.g. Windsurf) is pointed
