@@ -769,14 +769,25 @@ Re-checked item by item, 2026-08-29:
 
 ## T4 — Second-client verification
 
-**Status:** `on_track` as of 2026-09-05 — `T3` (all of it, including
-`T3.5`) is now `done`, so `T4` is unblocked. Not yet started.
+**Status:** `T4.1`–`T4.3` **done as of 2026-09-06**; `T4.4` remains —
+Paul is running that one himself (see below). `T3` (all of it, including
+`T3.5`) was `done`, which unblocked this Track.
 **depends_on:** `T3` — satisfied.
 
 1. **T4.1 — Second MCP client configured against the existing server.**
    Acceptance: a second, different MCP client (e.g. Windsurf) is pointed
    at the same Railway URL and bearer token used in `T3.5`, with zero
    server-side code or config changes. depends_on: `T3.3`, `T3.4`.
+
+   **Closed 2026-09-06.** LM Studio 0.4.23 was configured via
+   `C:\Users\pjpou\.lmstudio\mcp.json` with a `knotrack` entry pointing at
+   the same Railway URL, alongside Paul's pre-existing `linear`/`github-*`
+   entries — no server-side file touched. Cursor was the original pick but
+   wasn't drivable from this session's remote computer-use tooling (IDEs
+   resolve to click-only access, no keystroke injection) — an automation
+   limitation, not a finding about Cursor as an MCP client; its own
+   `mcp.json` is left configured in case Paul wants to try it by hand. See
+   `docs/client-compatibility.md` for the full writeup.
 2. **T4.2 — Full tool-call smoke test from the second client.**
    Acceptance: from the second client, `kt_register_project`,
    `kt_create_track`, `kt_create_item`, `kt_update_item_status`,
@@ -797,10 +808,33 @@ Re-checked item by item, 2026-08-29:
    drift answer, is what both clients are checked against. The real
    drift-answer assertion belongs to `T6`'s own acceptance criteria
    instead, once that tool exists.
+
+   **Closed 2026-09-06.** From LM Studio's chat, all six tools were
+   called in sequence, each real ID threaded into the next call:
+   `kt_register_project` → `project_id: 64cfb347-dffe-47c9-8cdf-0f88c3c8ee20`;
+   `kt_create_track` → `track_id: fd23bbbb-a15d-4cef-8eb9-fbb55f09a1e8`;
+   `kt_create_item` → `item_id: 7130554e-06e6-4871-bbba-f26f281f2621`;
+   `kt_update_item_status` → `{"ok":true}`; `kt_get_next_steps` →
+   `{"recommended_items":[]}` (correct — the only item is `in_progress`,
+   not `pending`); `kt_record_session_summary` → a real `event_id` with
+   `drift_flags_raised:[]`. `kt_check_drift` returned
+   `{"error":{"code":"INTERNAL_ERROR","http_status_equivalent":500,"message":"kt_check_drift is registered but not yet implemented in this build",...}}`
+   — confirmed byte-for-byte against the template string in
+   `src/mcp/tool-helpers.ts`, not just visually compared, and consistent
+   with what `T3.5` exercised on the first client. Full evidence and raw
+   payloads in `docs/client-compatibility.md`.
 3. **T4.3 — Client-compatibility notes documented.** Acceptance:
    `docs/client-compatibility.md` records any client-specific quirks
    observed in `T4.2` and confirms none required a server change.
    depends_on: `T4.2`.
+
+   **Closed 2026-09-06.** `docs/client-compatibility.md` written, covering
+   both clients used to date, the Cursor-was-untestable-here caveat, and
+   three LM-Studio-specific quirks (tool-schema token overhead with
+   multiple integrations active, impractically slow CPU-bound inference
+   on the originally-loaded large model, and per-call human approval by
+   default) — all confirmed to be client-side behavior with no server
+   code, config, or protocol-surface change involved.
 4. **T4.4 — OAuth-shaped connector clients checked (Grok, Perplexity)
    (added 2026-08-28).** Not part of `T4`'s original minimum bar
    (`T4.1` only required one second client), but scheduled here rather
@@ -1239,6 +1273,14 @@ scope decisions, not bugs, per the `clear-decisions` walkthrough:**
   with actually requires `server/discover` to connect at all, that's
   the forcing function; if every verification passes on v1, stays
   deferred past `v1.0.0`.
+
+  **`T4` checkpoint (2026-09-06): still deferred.** Both `T4.1`/`T4.2`
+  clients — the official `@modelcontextprotocol/sdk` v1 TypeScript client
+  (`T3.5`) and LM Studio's own built-in MCP client (`T4.1`/`T4.2`) —
+  connected and completed the full tool-call smoke test on the existing
+  v1-shaped `initialize`/`tools/list`/`tools/call` surface; neither needed
+  `server/discover`. `T7.1`/`T7.2` remain the only still-open trigger
+  points.
 - **Superseded 2026-08-28, now scheduled as `T7.7` — migration rollback
   (`down`) mode.** Was `T9.x`/unscheduled, "deferred until a real
   forward migration actually needs reverting." Re-sequenced into
