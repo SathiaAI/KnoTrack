@@ -319,7 +319,7 @@ points at. Swapping deploy target is a matter of re-pointing `DATABASE_URL`
 and re-running migrations, not a code change — though the TLS settings are
 target-specific and must also be set correctly: Fly.io's private network needs
 `DATABASE_SSL_MODE=disable`, and Railway's managed Postgres needs
-`KNOTRACK_DB_SSL_CA_BASE64` set to its self-signed cert. See TRD §4
+`KNOTRACK_DB_SSL_CA_BASE64` set to its self-signed cert. See TRD §7
 (Environment Variables) for the exact value per platform.
 
 ---
