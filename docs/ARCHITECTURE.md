@@ -14,12 +14,16 @@ self-contained request carrying explicit IDs (`project_id`, `track_id`,
 keeps KnoTrack from ever becoming a work-dispatching orchestrator.
 
 **Stack:** Node.js 20 + TypeScript, `@modelcontextprotocol/sdk`, Fastify,
-Postgres via `pg` + `node-pg-migrate`.
+Postgres via `pg` + a hand-written raw-SQL migration runner (`scripts/migrate.ts`) — not `node-pg-migrate`, which isn't a project dependency (see `docs/DATABASE_SCHEMA.md`'s "Migration tool" note).
 
 **Deploy targets (identical architecture on all three):** Render + Supabase,
 Railway + Postgres, Fly.io + Postgres. Same Docker image, same Node process,
 same schema/migrations — the only thing that differs is *where* compute and
-Postgres are provisioned.
+Postgres are provisioned. **As of 2026-09-07, only Railway + Postgres has
+actually been deployed and verified** (`docs/ROADMAP.md` T3/T4;
+`docs/deploy/railway.md`) — the Render+Supabase and Fly.io diagrams below
+describe the identical-architecture target design, not a confirmed-working
+deployment (`docs/ROADMAP.md` T7.1/T7.2, both still `blocked`).
 
 ---
 
@@ -90,7 +94,7 @@ flowchart TB
             LNA["Linear Adapter Client"]
         end
 
-        DAL["Data Access Layer<br/>(pg pool, node-pg-migrate,<br/>transaction helpers)"]
+        DAL["Data Access Layer<br/>(pg pool, scripts/migrate.ts,<br/>transaction helpers)"]
     end
 
     PG[("Postgres")]
@@ -309,10 +313,14 @@ flowchart TB
 **Why identical is achievable:** the process reads its Postgres connection
 string and adapter secrets from environment variables only; it makes no
 assumption about the platform it runs on (no Render-specific or Fly-specific
-SDK calls, no reliance on a platform's native cron/queue). `node-pg-migrate`
+SDK calls, no reliance on a platform's native cron/queue). `scripts/migrate.ts`
 runs the same migration set against whichever Postgres the connection string
 points at. Swapping deploy target is a matter of re-pointing `DATABASE_URL`
-and re-running migrations, not a code change.
+and re-running migrations, not a code change — though the TLS settings are
+target-specific and must also be set correctly: Fly.io's private network needs
+`DATABASE_SSL_MODE=disable`, and Railway's managed Postgres needs
+`KNOTRACK_DB_SSL_CA_BASE64` set to its self-signed cert. See TRD §7
+(Environment Variables) for the exact value per platform.
 
 ---
 
