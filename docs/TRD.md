@@ -802,7 +802,7 @@ Both `kt_check_drift` and `kt_render_roadmap` are explicitly flagged in this doc
 
 **`kt_render_roadmap`:**
 - Renders at most `KNOTRACK_ROADMAP_TRACK_CAP` tracks (default **200**) and, per track, at most `KNOTRACK_ROADMAP_ITEM_PER_TRACK_CAP` items (default **100**), in the same topological/sequence order used elsewhere.
-- Same 5000ms wall-clock budget as drift scanning; if hit mid-render, the partial content generated so far is returned rather than the request timing out.
+- Same `KNOTRACK_DRIFT_SCAN_TIMEOUT_MS` (default 5000ms) budget as drift scanning, applied via an elapsed-time check before each per-track item fetch plus a `statement_timeout` on the query itself — not a `Promise.race` (a synchronous render can't be preempted that way). This bounds the per-track fetch phase only: the initial project lookup and the final synchronous topological sort/render step both run outside the timer. If the budget is hit mid-fetch, the partial content generated so far is returned rather than the request timing out.
 - Because the tool's only output field is `content` (a single string), truncation is communicated **inline**, appended as the final line(s) of that string, e.g.:
   ```
   > Roadmap truncated: showing 200 of 341 tracks. Some tracks omit items beyond the first 100.
@@ -851,7 +851,7 @@ Both `kt_check_drift` and `kt_render_roadmap` are explicitly flagged in this doc
 **Behavior:**
 1. The Fastify process being able to answer at all is baseline liveness.
 2. The handler additionally runs `SELECT 1` to confirm actual DB reachability (not just process liveness) — a KnoTrack instance whose Postgres is unreachable is not meaningfully "healthy" even though the HTTP server itself is up. **This query runs against a small, dedicated connection pool (`max: 2`), isolated from the main pool that MCP tool traffic uses** — a flood of unauthenticated `/health` requests, or a slow DB making these checks queue up, can then only ever contend with itself for connection-pool slots inside the process, never queue behind or block the main pool's tool-traffic connections — though on a Postgres server whose total connection limit sits at or near `KNOTRACK_DB_POOL_MAX`, the health pool's 2 connections still draw from that same server-side connection budget and CPU, so this isolates at the application connection-pool level, not a guarantee against every form of database contention. The bound is enforced with `statement_timeout` set on that dedicated pool (**1000ms**, `src/server/health-route.ts`), so Postgres itself cancels a hung query server-side and frees the connection back to the health pool for the next check — not a client-side race that leaves the query running underneath. The health pool is closed via a Fastify `onClose` hook so it doesn't outlive the server.
-3. Total handler time budget: **under 2000ms**, comfortably inside the ~2–5s default health-check timeouts these platforms use; the 1000ms DB-query timeout leaves headroom for the rest of the handler.
+3. Total handler time budget: up to ~3000ms in the worst case, not a flat under-2000ms figure — the health pool's `connectionTimeoutMillis: 2000` (time to acquire a connection under load) and its `statement_timeout: 1000ms` (time for `SELECT 1` to run) are sequential bounds, not a single combined one. Still comfortably inside the ~2–5s default health-check timeouts these platforms use.
 
 **Success (DB reachable) — `200 OK`:**
 ```json
