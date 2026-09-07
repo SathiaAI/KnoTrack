@@ -316,7 +316,11 @@ assumption about the platform it runs on (no Render-specific or Fly-specific
 SDK calls, no reliance on a platform's native cron/queue). `scripts/migrate.ts`
 runs the same migration set against whichever Postgres the connection string
 points at. Swapping deploy target is a matter of re-pointing `DATABASE_URL`
-and re-running migrations, not a code change.
+and re-running migrations, not a code change — though the TLS settings are
+target-specific and must also be set correctly: Fly.io's private network needs
+`DATABASE_SSL_MODE=disable`, and Railway's managed Postgres needs
+`KNOTRACK_DB_SSL_CA_BASE64` set to its self-signed cert. See TRD §4
+(Environment Variables) for the exact value per platform.
 
 ---
 
