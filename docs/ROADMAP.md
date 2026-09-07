@@ -769,9 +769,9 @@ Re-checked item by item, 2026-08-29:
 
 ## T4 — Second-client verification
 
-**Status:** `T4.1`–`T4.3` **done as of 2026-09-06**; `T4.4` remains —
-Paul is running that one himself (see below). `T3` (all of it, including
-`T3.5`) was `done`, which unblocked this Track.
+**Status:** `T4.1`–`T4.4` **done as of 2026-09-07** — all of `T4` is
+closed. `T3` (all of it, including `T3.5`) was `done`, which unblocked
+this Track.
 **depends_on:** `T3` — satisfied.
 
 1. **T4.1 — Second MCP client configured against the existing server.**
@@ -851,6 +851,62 @@ Paul is running that one himself (see below). `T3` (all of it, including
    recorded as a known limitation rather than left silently untried.
    Either outcome closes the item — this is about getting a real
    answer, not requiring success. depends_on: `T3.5`.
+
+   **Closed 2026-09-07.** Paul ran both, live, from his own accounts;
+   both outcomes are real answers per the acceptance criterion above —
+   one pass, one documented fail, neither left silently untried.
+
+   **Grok — fail (b), documented.** `grok.com/connectors` → New Connector
+   → Custom presents an OAuth-only form (Client ID/Secret, Authorization
+   Endpoint, Token Endpoint, Scopes, Token Auth Method). No raw
+   header/API-key field exists anywhere in it. KnoTrack has no OAuth
+   authorization server (`docs/TRD.md` §4 — static bearer-token scheme
+   only), so this is a genuine, permanent incompatibility, not a
+   configuration gap.
+
+   **Perplexity — pass (a).** Perplexity's actual connector surface has
+   two separate mechanisms, discovered live (the runbook's assumption of
+   a single flow was wrong): a general-purpose "Credential vault" (for
+   its agentic Computer feature, explicitly out of scope — "not
+   supported by Connectors") and, separately, Connectors → "+ Custom
+   connector" → "Add MCP connector", whose Advanced section has an
+   Authentication dropdown with OAuth / **API Key** / None. Using API
+   Key with a fresh, single-purpose bearer token (see rotation note
+   below — value not recorded here, same convention as every other
+   live token in this repo's docs), `kt_register_project` was called
+   with `name: "connector-test"`,
+   `source_type: "local"`, `source_ref: "connector-test"` and returned
+   `project_id: d1c96673-2744-46a9-9df4-11e2b53bf7d8`. Independently
+   confirmed against the live server (not taken on Perplexity's word
+   alone): a direct `kt_get_project_status` call against that
+   `project_id`, made from this session using the original `T3.5` token,
+   returned `{"tracks":[],"drift_flags":[],"recent_events":[]}` — exactly
+   the shape of a freshly registered project with nothing else attached.
+   Result recorded in `docs/client-compatibility.md`.
+
+   **GrokBot (a separate Grok-family surface) — pass, additionally verified.** Distinct from
+   the `grok.com/connectors` UI above: GrokBot is a chat-driven agent Paul also has access to
+   that manages its own MCP server config on request, explicitly supporting a raw
+   bearer/API-key token on a remote URL (unlike the OAuth-only web form). Given the same live
+   server URL and the same `T4.4` token, it called `kt_register_project(name:
+   "grokbot-test", source_type: "local", source_ref: "grokbot-test")` and returned
+   `project_id: 144e8d9f-06b6-48e6-b4df-fb39a8ae0874`, independently confirmed against the
+   live server via a direct `kt_get_project_status` call using the separate `T3.5` token
+   (`{"tracks":[],"drift_flags":[],"recent_events":[]}` — the correct shape). GrokBot's exact
+   product branding/architecture relative to `grok.com` could not be independently confirmed
+   from public sources (only marketing-style, mutually-inconsistent third-party pages exist);
+   its actual behavior in this test is what's recorded. Full detail in
+   `docs/client-compatibility.md`.
+
+   **Token rotation note:** rather than reuse the `T3.5`/`T4.1` token,
+   Paul chose to mint a fresh, single-purpose token for this test
+   (`scripts/generate-token.ts`) and append it to
+   `KNOTRACK_API_TOKENS` (a comma-separated list built for exactly this —
+   see `docs/TRD.md` §4) rather than overwrite it, so either connector
+   misbehaving could be revoked in isolation without touching the
+   LM Studio/Cursor config already depending on the original token. Both
+   tokens remain valid; no revocation has happened as of this write since
+   neither connector showed any sign of mishandling it.
 
 ---
 

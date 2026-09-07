@@ -105,3 +105,103 @@ server code, `railway.json`, environment variables beyond the routine
 bearer-token rotation already covered under `T3.5`/`T3.6`, or the MCP
 protocol surface itself. `T4.1`'s "zero server-side code or config
 changes" condition holds.
+
+## `T4.4` — OAuth-shaped connector clients (Grok, Perplexity)
+
+Evidence for `T4.4` in `docs/ROADMAP.md`, full steps in
+`docs/deploy/client-verification-runbook.md` Parts C/D. Unlike `T4.1`'s
+clients, these two expose OAuth/API-Key-shaped custom-connector UIs
+instead of a raw-header config file, so whether either could reach a
+static-bearer-token server at all was genuinely unverified going in.
+Both were run live by Paul from his own accounts, against a fresh,
+single-purpose token appended to `KNOTRACK_API_TOKENS` (rather than
+reusing the `T3.5`/`T4.1` token, so either connector mishandling it
+could be revoked in isolation without touching LM Studio/Cursor's
+working config).
+
+| Client | Auth option used | Result |
+|---|---|---|
+| Grok (`grok.com/connectors` → Custom Connector) | N/A — no raw-token option exists | **Fail.** OAuth-only form (Client ID/Secret, Authorization/Token endpoints, Token Auth Method). No field can express a static bearer token. |
+| GrokBot (separate Grok-family surface — see below) | Server URL + bearer token | **Pass.** `kt_register_project` succeeded. |
+| Perplexity (Connectors → "Add MCP connector") | Authentication: **API Key** | **Pass.** `kt_register_project` succeeded. |
+
+### Grok — fail, documented incompatibility
+
+Grok's Custom Connector form is OAuth-only: Client ID, Client Secret,
+Authorization Endpoint, Token Endpoint, Scopes, and a Token Auth Method
+dropdown (`none (PKCE only)`, `client_secret_post`, `client_secret_basic`).
+No raw header or API-key field exists anywhere in it. KnoTrack has no
+OAuth authorization server — it validates a static bearer token against
+`KNOTRACK_API_TOKENS` (`docs/TRD.md` §4) — so there is no way to configure
+this connector against KnoTrack today. This is a genuine, permanent
+incompatibility given KnoTrack's current auth model, not a
+workaround-able configuration gap, and satisfies `T4.4`'s acceptance
+criterion (b).
+
+### Perplexity — pass, independently verified
+
+Perplexity's actual connector surface has two separate mechanisms —
+discovered live, since the runbook (written from Perplexity's own,
+partly-conflicting help docs) assumed a single flow:
+
+1. **Credential vault** (Settings → Credential vault) — a general-purpose
+   store for Perplexity's agentic "Computer" feature to authenticate
+   arbitrary HTTP calls, explicitly scoped to APIs "not supported by
+   Connectors." Not the MCP registration path.
+2. **Connectors** (Connectors tab → "+ Custom connector" → "Add MCP
+   connector") — the real MCP client. Its Advanced section has an
+   Authentication dropdown: OAuth / **API Key** / None, a Transport
+   dropdown (default Streamable HTTP — matches KnoTrack's transport), and
+   Network access (default Public).
+
+With Authentication set to **API Key** and the fresh token entered,
+Perplexity was asked to call `kt_register_project` with `name:
+"connector-test"`, `source_type: "local"`, `source_ref: "connector-test"`.
+It returned:
+
+```json
+{"project_id": "d1c96673-2744-46a9-9df4-11e2b53bf7d8"}
+```
+
+**Independently verified, not taken on Perplexity's report alone:** from
+this session, using the separate original `T3.5` token, a direct
+`kt_get_project_status` call against that same `project_id` returned
+`{"tracks":[],"drift_flags":[],"recent_events":[]}` — exactly the shape
+of a real, freshly registered project with nothing else attached. This
+confirms Perplexity's "API Key" auth option sends the token as a
+standard `Authorization: Bearer <token>` header that KnoTrack accepts,
+not a hallucinated or misreported result. Satisfies `T4.4`'s acceptance
+criterion (a).
+
+### GrokBot — a separate Grok-family surface, pass, independently verified
+
+**Not the same interface as the `grok.com/connectors` fail above.** Paul has access to a
+distinct product/surface referred to as "GrokBot" (a chat-driven agent that manages its own
+MCP server configuration on Paul's request — "you give me a remote HTTPS MCP URL (plus any
+bearer/API key or OAuth client id), or a local launch line... I confirm with you, then add
+it"). This isn't the same UI already recorded as a fail — that one is an OAuth-only web form
+with no raw-token field at all. GrokBot's own description explicitly supports a raw
+bearer/API key on a remote URL, which is what was actually used here.
+
+**What this session could and couldn't confirm about GrokBot itself:** xAI's own developer
+docs (`docs.x.ai/developers/tools/remote-mcp`) describe a real "Remote MCP Tools" feature
+taking a server URL plus an `authorization` bearer-token header, no OAuth — mechanically
+consistent with what GrokBot did here. But the third-party articles describing "GrokBot" as a
+consumer product are inconsistent with each other (one says it's cloud-only with no MCP
+support at all, another describes a different local/remote split than what GrokBot itself
+stated) and read as SEO/marketing content rather than reliable documentation, so GrokBot's
+exact branding/architecture relative to `grok.com` is not independently confirmed here — only
+its actual behavior in this test is.
+
+**What was done:** GrokBot was given the same live server URL
+(`https://knotrack-server-production.up.railway.app/mcp`) and the same fresh `T4.4` bearer
+token already used for Perplexity's test (reused, not rotated again, per the original
+single-purpose-token rationale). Asked to call `kt_register_project(name: "grokbot-test",
+source_type: "local", source_ref: "grokbot-test")`, it returned `project_id:
+144e8d9f-06b6-48e6-b4df-fb39a8ae0874`.
+
+**Independently verified, not taken on GrokBot's report alone:** a direct
+`kt_get_project_status` call against that same `project_id`, using the separate original
+`T3.5` token, returned `{"tracks":[],"drift_flags":[],"recent_events":[]}` — the correct
+shape for a real, freshly registered, otherwise-untouched project. Confirms GrokBot's stated
+raw-token mechanism actually reaches KnoTrack, not a hallucinated result.

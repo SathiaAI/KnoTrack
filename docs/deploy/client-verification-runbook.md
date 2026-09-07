@@ -252,8 +252,23 @@ way to express a raw bearer token, or it connects but every tool call
 401s. Either way, write down exactly which auth option you picked and
 what happened — that's the whole point of this test.
 
-**Result:** _(fill in once run — record in `docs/client-compatibility.md`
-either way)_
+**Result (2026-09-07): FAIL, as anticipated by outcome (c) above.** The
+actual UI (`grok.com/connectors` → New Connector → Custom) is OAuth-only:
+Client ID, Client Secret, Authorization Endpoint, Token Endpoint, Scopes,
+and a Token Auth Method dropdown (`none (PKCE only, recommended)`,
+`client_secret_post`, `client_secret_basic`). No raw header/API-key field
+exists anywhere in the form — options (a) and (b) above were never
+reachable. Since KnoTrack has no OAuth authorization server, this
+connector cannot be pointed at KnoTrack at all; not attempted further.
+Full writeup in `docs/client-compatibility.md`.
+
+**Addendum — GrokBot, a separate Grok-family surface, not covered by the steps above:**
+Paul also has access to "GrokBot," a distinct chat-driven agent (not the `grok.com/connectors`
+web form tested above) that accepts a raw bearer/API-key token on a remote MCP URL. Given the
+same server URL and the `T4.4` token, it passed: `kt_register_project` succeeded and was
+independently verified against the live server. This isn't a deviation of the steps above —
+it's a different product/surface this runbook didn't originally anticipate. Full detail in
+`docs/client-compatibility.md`.
 
 ---
 
@@ -286,8 +301,23 @@ actually trying it resolves which is current.
 **Fail:** connector option doesn't exist, or every call 401s regardless
 of how the API Key field is filled in.
 
-**Result:** _(fill in once run — record in `docs/client-compatibility.md`
-either way)_
+**Result (2026-09-07): PASS — with a real deviation from steps 1-2 above,
+resolving the help-doc conflict this test was designed to settle.**
+Perplexity actually has two separate systems, not the single flow these
+steps assumed: a **Credential vault** (Settings → Credential vault,
+explicitly scoped to APIs "not supported by Connectors" — not the MCP
+path) and, separately, **Connectors → "+ Custom connector" → "Add MCP
+connector"**, whose Advanced section has the Authentication dropdown
+(OAuth / API Key / None) this runbook anticipated. Using **API Key** with
+a fresh, single-purpose token, `kt_register_project(name:
+"connector-test", source_type: "local", source_ref: "connector-test")`
+returned `project_id: d1c96673-2744-46a9-9df4-11e2b53bf7d8`. Independently
+confirmed against the live server (not taken on Perplexity's report
+alone): `kt_get_project_status` against that same `project_id`, called
+directly using the separate `T3.5` token, returned
+`{"tracks":[],"drift_flags":[],"recent_events":[]}` — the correct shape
+for a freshly registered, otherwise-untouched project. Full writeup in
+`docs/client-compatibility.md`.
 
 ---
 
