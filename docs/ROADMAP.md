@@ -183,11 +183,15 @@ merge. Don't hand-edit this line without also verifying it against
 `T1.6` not being formally closed — see T1's status note above; recorded
 here rather than silently treating the dependency as satisfied).
 
-Ten of the 14 tools are fully implemented here. `kt_sync_to_github`,
-`kt_sync_to_linear`, `kt_record_session_summary`, and `kt_check_drift` get
-working stub implementations now (correct request/response shape, no
-external API calls, no real drift heuristics) — full behavior for the
-sync tools lands in T5, and for the two drift-related tools in T6.
+**Stale paragraph corrected 2026-09-07** (was left over from an earlier
+point-in-time draft and contradicted the Status block above): 11 of the
+14 tools are fully implemented here, not 10, and `kt_record_session_summary`
+is one of them — `T2.9`'s acceptance criterion is "no drift analysis
+performed yet," not a registered stub. Only 3 tools get working stub
+implementations (correct request/response shape, no external API calls,
+no real logic): `kt_check_drift`, `kt_sync_to_github`, and
+`kt_sync_to_linear` — full behavior for the sync tools lands in T5, and
+for `kt_check_drift` in T6.
 
 1. **T2.1 — Local Postgres migrations runnable.** Acceptance: `migrate up`
    against a clean local Postgres 13+ instance creates every table in
@@ -1345,33 +1349,35 @@ scope decisions, not bugs, per the `clear-decisions` walkthrough:**
   dropped that promise, and there's no reason to wait for an accidental
   forcing case when it can be built and verified deliberately as part
   of release hardening.
-- **`T9.x` (new, unscheduled) — finish propagating the source_type/
-  source_ref registration model through the remaining docs.** Commits
-  `5809ae4`/`bca45ff` fixed the "13 tools"/ID-format/cross-track-deps/
-  credential-contract drift in `PRD.md` sections 4.1, 4.4, 4.7, 5.3, and
-  the Appendix, but did not touch: `kt_get_project_status`'s own PRD
-  section (still describes a `{ project: { root_path, repo_url,
-  adapters_enabled } }` shape that `get-project-status.ts` doesn't return
-  at all — flagged as its own separate drift in commit `208c90b`, not
-  re-verified this round); `kt_render_roadmap`, `kt_sync_to_github`, and
-  `kt_sync_to_linear`'s PRD sections §4.12–4.14; and one stray
-  `root_path`/`repo_url` mention in PRD.md §6's glossary. This is not
-  speculative work waiting on real handlers: all three tools are
-  unimplemented stubs, but `src/mcp/tools/stubs.ts` registers each one's
-  real Zod schema from `src/schemas/tools.ts`, and `tools/list` already
-  publishes those schemas to clients today — so the contradiction with
-  the PRD prose is live now, not merely anticipated. Concretely:
-  `kt_render_roadmap`'s schema takes `project_id` + `format`
-  (`'markdown' | 'mermaid'`) with no `output_path` field at all, while
-  PRD §4.12's acceptance criteria are written entirely around a
-  `root_path`/`output_path` file-writing behavior the schema has no way
-  to express; `kt_sync_to_github` and `kt_sync_to_linear` both take only
-  `project_id` + `track_id`, while PRD §4.13/§4.14 gate on
-  `adapters_enabled`, a field the current `source_type`/`source_ref`
-  registration model (PRD §4.1) no longer has. Needs a pass once
-  `kt_get_project_status` is re-verified against real code — but the
-  three stub sections' prose can and should be fixed now, against the
-  schemas already shipping.
+- **`T9.x` — finish propagating the source_type/source_ref registration
+  model through the remaining docs. Resolved 2026-09-07 (PR-review
+  Finding 1, item 2), scope was substantially larger than this note
+  estimated.** This note's own list (`kt_get_project_status`'s §4.2,
+  `kt_render_roadmap`/`kt_sync_to_github`/`kt_sync_to_linear`'s
+  §4.12–4.14, one glossary mention) undercounted the real drift: a
+  field-by-field diff of every PRD §4.x tool section against the real
+  Zod schemas in `src/schemas/tools.ts` and `docs/TRD.md` found **12 of
+  14 tool sections** with wrong, extra, or missing fields, plus a
+  fictional caching layer on `kt_get_project_status`, a fictional
+  filesystem-write design on `kt_render_roadmap` (confirmed here, as
+  this note anticipated), an elaborate never-built multi-direction sync
+  design on `kt_sync_to_github`/`kt_sync_to_linear` (confirmed here,
+  also as anticipated), and a **substantive behavioral contradiction**
+  on `kt_update_item_status` this note didn't catch: PRD described an
+  unmet-dependency transition to `done` as succeeding with an advisory
+  `sequence_warning`, but the real tool (`docs/TRD.md` §3.11) blocks it
+  with a hard `409 CONFLICT`. §5.3 (Security) was also found separately
+  drifted — a fictional per-device bearer-token issuance/revocation CLI
+  system, versus the real single-shared-pool `KNOTRACK_API_TOKENS`
+  env-var model (`docs/TRD.md` §4). `ARCHITECTURE.md`, `DATABASE_SCHEMA.md`,
+  and `TEST_CASES.md` were grepped for the same stale field names and
+  found clean — the drift was confined to `PRD.md`. Given the scope,
+  Paul chose (via `AskUserQuestion`) a full rewrite of PRD §4/§5.3 to
+  match `docs/TRD.md`/the real schemas in one pass, rather than a narrow
+  fix or reducing §4 to pointers into TRD — done. `README.md`'s tool
+  table and "9 of 14 implemented" prose (a separate, smaller drift found
+  during the same pass — `kt_record_decision`/`kt_update_item_status`
+  were marked `planned` despite being implemented) was also fixed.
 
 **Deferred from a documentation-completeness audit (2026-08-24), prompted
 by "do we have clarity on the gaps and how it maps to the roadmap":**
@@ -1402,25 +1408,39 @@ by "do we have clarity on the gaps and how it maps to the roadmap":**
   `adapter_credentials` mentions.** This audit fixed the load-bearing
   instances (TRD §1/§5/Appendix A/B, `DATABASE_SCHEMA.md`'s top-of-doc
   migration-tool line) but didn't chase every mention repo-wide:
-  `PRD.md` §5.3 (two `adapter_credentials` mentions), `ARCHITECTURE.md`
-  (three `node-pg-migrate` mentions — tech-stack summary, component
-  diagram label, and a deployment-topology aside), and
+  `PRD.md` §5.3 (two `adapter_credentials` mentions) — **fixed 2026-09-07**
+  as part of §5.3's full rewrite under PR-review Finding 1 (above), which
+  replaced the fictional per-device-token/`adapter_credentials` model
+  wholesale, so these mentions are gone rather than just renamed;
+  `ARCHITECTURE.md` (three `node-pg-migrate` mentions — tech-stack summary, component
+  diagram label, and a deployment-topology aside) — **fixed 2026-09-07**,
+  all three now point at `scripts/migrate.ts`; and
   `DATABASE_SCHEMA.md`'s two remaining secondary `node-pg-migrate`
   mentions (both in parenthetical rationale, lower-stakes than the
-  top-of-doc claim already fixed). Also found this round but not fixed:
-  TRD §2's Repository Layout tree listed the then-9 unimplemented tools
-  as separate files under `src/mcp/tools/` when they were all actually
-  in one `stubs.ts` — **partially resolved 2026-08-26**: `list-tracks.ts`
+  top-of-doc claim already fixed) — **fixed 2026-09-07** alongside the
+  above. Also found this round but not fixed at the time: TRD §2's
+  Repository Layout tree listed the then-9 unimplemented tools as
+  separate files under `src/mcp/tools/` when they were all actually in
+  one `stubs.ts` — **partially resolved 2026-08-26**: `list-tracks.ts`
   and `get-track.ts` are now real files matching the tree (T2 build-out,
   first slice, below); `record-decision.ts` and `update-item-status.ts`
-  are now real files too (T2 build-out, second slice, below), leaving 5
-  still bundled in `stubs.ts`. `src/db/queries/decisions.ts` (also
-  flagged here as not existing yet) now exists as well, shipped
-  alongside `record-decision.ts` in that same second slice. Still open:
-  TRD §2 shows a `src/adapters/` tree that doesn't exist at all yet
-  (`T5` not started). This is not load-bearing the way the fixed ones
-  were, but it's stale and should be swept when `T5` starts rather than
-  piecemeal before then.
+  are now real files too (T2 build-out, second slice, below). **Fully
+  resolved 2026-09-07** (TRD/Roadmap/GitHub/Linear/local accuracy pass):
+  TRD §2's tree and staleness note now correctly state 11 of 14 tools as
+  real files (`src/mcp/tools/` has 12 files on disk — the 11 real ones
+  plus `stubs.ts`, not 10), `src/db/queries/decisions.ts` exists, and
+  `src/adapters/` still doesn't exist at all (`T5` not started, unchanged
+  and still accurately flagged as such). Separately, this same pass found
+  and fixed a larger, previously-unflagged issue: TRD §2's tree also
+  listed `render.yaml`, `railway.toml`, and `fly.toml` as existing files
+  — none of the three has ever existed in this repo (confirmed via `git
+  log --all --diff-filter=A`) — and TRD §7 / `ARCHITECTURE.md` /
+  `PRD.md` §5.1/§5.5 all described Render+Supabase and Fly.io in the same
+  definitive, already-configured language as the genuinely-deployed
+  Railway target, without noting that only Railway has actually been
+  built and verified (`T7.1`/`T7.2` are both still `blocked` — Render and
+  Fly.io have never been deployed). All four documents now carry that
+  caveat explicitly.
 - **`T9.x` — encryption-key rotation. Done, no longer a backlog item.**
   This was flagged as live-now (not a pre-`T5` deferral), since
   `kt_register_project` (`T2.2`, already fully shipped) already accepts

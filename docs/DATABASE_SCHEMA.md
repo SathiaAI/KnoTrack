@@ -162,7 +162,7 @@ consistently across the whole schema. Reasoning:
   not run inside the same transaction as other DDL on older Postgres versions (pre-12)
   and still cannot be rolled back within the transaction that added it on any version —
   a real hazard for a migration tool that wraps each migration in a transaction.
-- **node-pg-migrate and most Postgres client libraries (`pg`, `node-postgres`) return
+- **`scripts/migrate.ts` and most Postgres client libraries (`pg`, `node-postgres`) return
   enum values as plain strings anyway**, so there's no type-safety loss in application
   code — the CHECK constraint gives the same runtime guarantee at the database layer.
 - **Simpler tooling story**: introspection, ORMs, and ad-hoc `psql`/GUI clients treat
@@ -212,7 +212,7 @@ neither table has an `updated_at` column — there is nothing to represent, and 
 present-but-always-null `updated_at` would misleadingly imply mutability.
 
 This is enforced by convention plus code review, not by the schema itself, because the
-default `node-pg-migrate`-managed role needs `UPDATE` for the rest of the schema and
+default application role (managed via `scripts/migrate.ts`, not `node-pg-migrate`) needs `UPDATE` for the rest of the schema and
 Postgres privileges are granted per-table, not per-statement-in-application-code. For a
 deployment that wants the invariant enforced at the database level (e.g. to limit the
 blast radius of a bug or a compromised application credential), revoke `UPDATE` on
