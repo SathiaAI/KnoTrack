@@ -2,7 +2,12 @@
 
 KnoTrack is a self-hosted, Postgres-backed MCP server. This document describes the
 schema created by [`migrations/001_init.sql`](../migrations/001_init.sql) (reversed by
-[`migrations/001_init.down.sql`](../migrations/001_init.down.sql)).
+[`migrations/001_init.down.sql`](../migrations/001_init.down.sql)), as amended by later
+migrations — most significantly
+[`migrations/006_derived_track_status.sql`](../migrations/006_derived_track_status.sql)
+(T2.16), which drops the stored `tracks.status` column in favor of a derived-at-read-time
+view; see the `tracks` and `decisions` table entries and the new
+[`track_readiness` view](#view-track_readiness) below.
 
 - Engine: PostgreSQL 13+
 - Migration tool: a small custom runner (`scripts/migrate.ts`) over plain numbered
@@ -40,10 +45,13 @@ erDiagram
     TRACKS ||--o{ DRIFT_FLAGS : "tags (nullable)"
     TRACKS ||--o{ TRACK_DEPENDENCIES : "track_id"
     TRACKS ||--o{ TRACK_DEPENDENCIES : "depends_on_track_id"
+    TRACKS |o--o| DECISIONS : "pivot_decision_id (nullable pointer)"
 
     ITEMS ||--o{ ITEM_DEPENDENCIES : "item_id"
     ITEMS ||--o{ ITEM_DEPENDENCIES : "depends_on_item_id"
     ITEMS ||--o{ DRIFT_FLAGS : "tags (nullable)"
+
+    DECISIONS |o--o| DECISIONS : "resolves_decision_id (nullable, self)"
 
     PROJECTS {
         uuid id PK
@@ -68,7 +76,7 @@ erDiagram
         uuid id PK
         uuid project_id FK
         text title
-        text status "CHECK, default on_track"
+        uuid pivot_decision_id "nullable, FK to decisions, T2.16"
         text source_doc_ref "nullable"
         timestamptz created_at
         timestamptz updated_at
@@ -113,6 +121,8 @@ erDiagram
         text title
         text rationale
         text what_changed
+        text effect "CHECK note|open_pivot|resolve_pivot, default note, T2.16"
+        uuid resolves_decision_id "nullable, self FK, T2.16"
         timestamptz created_at "append-only, no updated_at"
     }
 
@@ -152,8 +162,8 @@ Notes on the diagram:
 
 ### Enum vs. text + CHECK
 
-Every enumerated column (`source_type`, `adapters.type`, `tracks.status`,
-`items.status`, `drift_flags.kind`) is implemented as **`text` with a `CHECK`
+Every enumerated column (`source_type`, `adapters.type`, `items.status`,
+`decisions.effect`, `drift_flags.kind`) is implemented as **`text` with a `CHECK`
 constraint**, not a native Postgres `CREATE TYPE ... AS ENUM`. This choice is applied
 consistently across the whole schema. Reasoning:
 
@@ -301,19 +311,53 @@ A track is a coherent unit of work within a project (roughly: an epic/initiative
 | `id` | `uuid` | PK, default `gen_random_uuid()` | |
 | `project_id` | `uuid` | `NOT NULL`, FK → `projects.id`, `ON DELETE CASCADE` | |
 | `title` | `text` | `NOT NULL` | |
-| `status` | `text` | `NOT NULL DEFAULT 'on_track'`, `CHECK IN ('on_track','pivot_pending','blocked','done')` | |
+| `pivot_decision_id` | `uuid` | nullable, composite FK → `decisions(id, track_id)`, `ON DELETE NO ACTION` (added by `migrations/006_derived_track_status.sql`, T2.16) | A pointer, not a boolean: `NULL` = no active pivot; otherwise the id of the `decisions` row that opened the currently-active pivot. See [`track_readiness`](#view-track_readiness) below for how this feeds derived `status`. |
 | `source_doc_ref` | `text` | nullable | e.g. a design doc URL or Linear project/issue reference the track was derived from |
 | `last_github_sync_at` | `timestamptz` | nullable | Set only by a successful `kt_sync_to_github` call (still a stub as of `migrations/005_tracks_sync_timestamps.sql` — T6 hasn't started). `NULL` means never synced, not "synced at epoch". Feeds the `SYNC_DRIFT` drift-flag rule (Appendix B). Scoped per track, not on `adapters`, so two tracks in the same project sharing one GitHub adapter don't share one timestamp — see that migration's header comment for the full reasoning (decided by Paul, 2026-08-25). |
 | `last_linear_sync_at` | `timestamptz` | nullable | Same as `last_github_sync_at`, for `kt_sync_to_linear`. |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Auto-maintained by `trg_tracks_set_updated_at` |
 
-**Indexes:** `idx_tracks_project_id` on `(project_id)`.
+**T2.16 — `status` is no longer a stored column.** `migrations/006_derived_track_status.sql`
+drops the old `status text NOT NULL DEFAULT 'on_track' CHECK IN (...)` column entirely.
+Status is now computed at read time by the `track_readiness` view (see below) from
+`pivot_decision_id`, each track's own item completion, and its direct dependencies'
+state — never written or cached on the row. This closed a defect in the old design: no
+write path ever set `status = 'done'`, so a track could never complete and a dependent
+could never unblock (`docs/TRD.md` §3.5).
+
+**Indexes:** `idx_tracks_project_id` on `(project_id)`;
+`idx_tracks_pivot_decision_id` on `(pivot_decision_id)` (added by migration 006,
+supporting the view's join and the compare-and-set updates in `kt_record_decision`).
 
 **ON DELETE reasoning:** `CASCADE` from `projects` — a track cannot outlive its
 project. (A track *itself* being deleted independently of its project is handled
 gracefully by `items`/`events`/`decisions`/`drift_flags` below via `SET NULL`, not
-`CASCADE`, where those tables are audit trail.)
+`CASCADE`, where those tables are audit trail.) `pivot_decision_id`'s own FK is
+`ON DELETE NO ACTION` — see the `decisions` table entry below for why.
+
+### View `track_readiness`
+
+Added by `migrations/006_derived_track_status.sql` (T2.16). One row per track,
+computing the facts that used to live in the stored `status` column, plus the two new
+facts introduced by this design:
+
+| Computed column | Meaning |
+|---|---|
+| `own_done` | The track has ≥1 item and every item is done-equivalent. An empty track (zero items) is never `own_done` — and therefore never `done`. |
+| `has_pivot` | `pivot_decision_id IS NOT NULL`. |
+| `direct_deps_ok` | Every **direct** dependency (`track_dependencies.depends_on_track_id`) is "locally OK": that dependency's own `own_done` is true AND it has no active pivot. Deliberately checks the dependency's *local* facts, never the dependency's own `status` — this is what keeps the whole view a single flat query with no recursion. |
+| `effective_done` | `own_done` AND NOT `has_pivot` AND every **transitive** dependency (the full reachability closure, not just direct) is `own_done` with no active pivot. This is the safe-to-build-on signal, distinct from `status` below. |
+| `status` | Computed in this fixed order: (1) `has_pivot` → `'pivot_pending'`; (2) NOT `direct_deps_ok` → `'blocked'`; (3) `own_done` → `'done'`; (4) else `'on_track'`. Never reads another track's `status` — only local facts and direct dependencies' local facts. |
+
+**Why `status` and `effective_done` can disagree.** `status` only looks one hop deep, so
+a track can read `status: 'done'` (its own items are complete and its direct
+dependencies are locally OK) while a dependency two-plus hops away is still broken —
+`own_done: true, effective_done: false`. This is a real, intentionally surfaced gap, not
+a bug: `kt_get_next_steps` filters on `effective_done` (not `status`) to avoid
+recommending work in a track sitting on a broken foundation, and `kt_render_roadmap`
+annotates the gap explicitly (`docs/TRD.md` §3.8, §3.13) rather than silently reporting
+`done` on unsafe ground.
 
 ### `track_dependencies`
 
@@ -332,9 +376,14 @@ depends_on_track_id)`, preventing a track from depending on itself at the row le
 
 **Cycle prevention:** A `CHECK` constraint can only see the row being inserted, so it
 can block direct self-dependency (`A → A`) but **cannot** detect or prevent a
-multi-hop cycle (`A → B → C → A`). Cycle detection across the whole dependency graph is
-the application's responsibility (a graph walk before insert, or a periodic
-consistency check) — this is a deliberate limitation of the schema, not an oversight.
+multi-hop cycle (`A → B → C → A`) by itself. As of `migrations/006_derived_track_status.sql`
+(T2.16), a `BEFORE INSERT OR UPDATE` trigger (`trg_track_dependencies_no_cycle`, backed
+by `reject_track_dependency_cycle()`, a recursive-CTE reachability check) closes that
+gap at the database level, raising SQLSTATE `23514` on any insert that would create a
+multi-hop cycle. This is layered on top of, not a replacement for, the
+application-level check in `src/domain/dependency-graph.ts` (shared by
+`kt_create_track` and `kt_create_item`) — the trigger is the last line of defense
+against any future write path that bypasses the application layer.
 
 **Indexes:** the composite PK already indexes `(track_id, depends_on_track_id)` (and
 therefore serves "what does track X depend on" lookups). `idx_track_dependencies_depends_on`
@@ -432,15 +481,28 @@ surface (`kt_record_event` vs. `kt_record_decision`).
 | `project_id` | `uuid` | `NOT NULL`, FK → `projects.id`, `ON DELETE CASCADE` | |
 | `track_id` | `uuid` | nullable, FK → `tracks.id`, `ON DELETE SET NULL` | Same reasoning as `events.track_id` |
 | `title` | `text` | `NOT NULL` | |
-| `rationale` | `text` | nullable | Why the decision was made |
-| `what_changed` | `text` | nullable | What concretely changed as a result |
+| `rationale` | `text` | `NOT NULL` (backfilled and validated by `migrations/006_derived_track_status.sql`) | Why the decision was made |
+| `what_changed` | `text` | nullable, `NOT NULL` when `effect IN ('open_pivot','resolve_pivot')` | What concretely changed as a result |
+| `effect` | `text` | `NOT NULL DEFAULT 'note'`, `CHECK IN ('note','open_pivot','resolve_pivot')` (added by migration 006, T2.16) | What this decision does to the track's pivot state. `'note'` (default): no side effect. `'open_pivot'`: this decision becomes the track's active pivot. `'resolve_pivot'`: this decision closes the pivot named in `resolves_decision_id`. |
+| `resolves_decision_id` | `uuid` | nullable, self FK → `decisions.id` (added by migration 006, T2.16) | Set only on an `effect = 'resolve_pivot'` row, pointing at the `open_pivot` decision it resolves. |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | No `updated_at` — append-only |
 
-**Indexes:** `idx_decisions_project_id` on `(project_id)`, `idx_decisions_track_id` on
-`(track_id)`.
+**Constraints (added by migration 006, T2.16):**
+- `decisions_id_track_id_key` — `UNIQUE (id, track_id)`. Exists solely so `tracks.pivot_decision_id` can carry a composite FK to `(id, track_id)` instead of just `id`, enforcing at the database level that a track's pivot pointer can only ever reference a decision that belongs to that same track.
+- `decisions_resolves_decision_id_uq` — partial unique index on `(resolves_decision_id) WHERE resolves_decision_id IS NOT NULL`. A given pivot-opening decision can be resolved by at most one `resolve_pivot` row, ever — this is what makes `kt_record_decision`'s resolve path a real compare-and-set rather than one of several possible resolutions racing.
+- `decisions_resolves_requires_effect` — `CHECK ((resolves_decision_id IS NOT NULL) = (effect = 'resolve_pivot'))`: the two fields are set together or not at all.
 
-**ON DELETE reasoning:** identical to `events` — `CASCADE` on `project_id`, `SET NULL`
-on `track_id`.
+**Indexes:** `idx_decisions_project_id` on `(project_id)`, `idx_decisions_track_id` on
+`(track_id)`, `decisions_track_id_effect_idx` on `(track_id, effect)` (migration 006,
+supporting the pivot-lookup queries in `kt_record_decision`).
+
+**ON DELETE reasoning:** `project_id`/`track_id` — identical to `events`, `CASCADE` on
+`project_id`, `SET NULL` on `track_id`. `tracks.pivot_decision_id`'s FK **back** into
+this table (see the `tracks` entry above) is deliberately `ON DELETE NO ACTION`, not
+`CASCADE` or `SET NULL`: `decisions` is append-only audit trail and is not expected to
+have rows deleted in normal operation, so this FK exists purely to enforce referential
+integrity on write, not to define delete-time behavior for a path the application
+never takes.
 
 ### `api_tokens`
 

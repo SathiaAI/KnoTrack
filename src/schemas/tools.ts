@@ -101,6 +101,16 @@ export const recordSessionSummaryInputSchema = z
   })
   .strict();
 
+// T2.16 (migrations/006_derived_track_status.sql): `effect` replaces the
+// old "every decision sets the track to pivot_pending" behavior — only an
+// explicit 'open_pivot' does that now, and 'resolve_pivot' clears it.
+// Default 'note' keeps existing callers (who never pass `effect`) working
+// exactly as before, minus the side effect they never asked for.
+// `expected_pivot_decision_id` is the resolve path's compare-and-set token
+// (read from a prior kt_get_track call's `track.pivot_decision_id`) —
+// required only when `effect` is 'resolve_pivot', enforced below since
+// zod's `.enum()`-conditional-required isn't expressible as plain field
+// constraints on a `.strict()` object.
 export const recordDecisionInputSchema = z
   .object({
     project_id: uuid(),
@@ -108,8 +118,19 @@ export const recordDecisionInputSchema = z
     title: z.string().min(1).max(300),
     rationale: z.string().min(1).max(5000),
     what_changed: z.string().min(1).max(5000),
+    effect: z.enum(['note', 'open_pivot', 'resolve_pivot']).default('note'),
+    expected_pivot_decision_id: uuid().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.effect === 'resolve_pivot' && val.expected_pivot_decision_id === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'expected_pivot_decision_id is required when effect is "resolve_pivot"',
+        path: ['expected_pivot_decision_id'],
+      });
+    }
+  });
 
 export const updateItemStatusInputSchema = z
   .object({

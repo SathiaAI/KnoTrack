@@ -242,6 +242,7 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
         title: 'Pivot the approach',
         rationale: 'The original approach no longer fits the constraints we found.',
         what_changed: 'Switched from plan A to plan B.',
+        effect: 'open_pivot',
       }),
     });
     expect(response.statusCode).toBe(200);
@@ -250,7 +251,7 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
     };
     expect(body.result.isError).toBeUndefined();
     expect(body.result.structuredContent?.decision_id).toMatch(/^[0-9a-f-]{36}$/i);
-    const track = await pool.query('SELECT status FROM tracks WHERE id = $1', [track_id]);
+    const track = await pool.query('SELECT status FROM track_readiness WHERE id = $1', [track_id]);
     expect(track.rows[0]?.status).toBe('pivot_pending');
   });
 

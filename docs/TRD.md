@@ -301,7 +301,7 @@ Example output:
 }
 ```
 
-When `status` is supplied, filtering is a direct `WHERE tracks.status = ...` clause, since track status is a stored column (§3.5) — no post-processing step is needed.
+When `status` is supplied, filtering is a `WHERE tr.status = ...` clause against the `track_readiness` view (§3.5, T2.16) — `status` is derived, not stored, but the view makes it a plain indexed-join filter, not a post-processing step.
 
 Errors: `401`; `404` (project not found); `422` (bad `status` enum value, malformed uuid); `500`.
 
@@ -327,6 +327,7 @@ Example output:
     "track_id": "8b2e1a10-...",
     "title": "Auth overhaul",
     "status": "on_track",
+    "pivot_decision_id": null,
     "source_doc_ref": "docs/auth-spec.md",
     "depends_on_track_ids": [],
     "created_at": "2026-08-01T12:00:00.000Z"
@@ -349,12 +350,18 @@ Example output:
 
 `dependency_graph.edges` uses explicit field names (`item_id`, `depends_on_item_id`) rather than generic `from`/`to` specifically to remove any ambiguity about edge direction: the edge `{item_id: A, depends_on_item_id: B}` means "A depends on B; A cannot be marked done until B is done."
 
-**Track status is a stored column (`tracks.status`), not derived.** It defaults to `on_track` and only ever changes via two write paths, both covered elsewhere in this document:
+**Track status is derived at read time, not stored (T2.16).** There is no `tracks.status` column. Every read of a track's status — this tool, `kt_list_tracks`, `kt_get_project_status`, `kt_render_roadmap` — selects from the `track_readiness` view (`migrations/006_derived_track_status.sql`), which computes `status` from current facts in this fixed order:
 
-- `kt_create_track` (§3.6) sets the initial value at insert time: `on_track`, or `blocked` if any listed `depends_on` track is not yet `done`.
-- `kt_record_decision` (§3.10) sets the referenced track's status to `pivot_pending`, in the same transaction as inserting the decision row.
+1. The track has an active pivot (`tracks.pivot_decision_id IS NOT NULL`) → `pivot_pending`.
+2. Any **direct** dependency is not locally OK (locally OK = that dependency's own `own_done` is true AND it has no active pivot — never that dependency's own `status`) → `blocked`.
+3. Else the track is `own_done` (has ≥1 item and every item is done-equivalent) → `done`.
+4. Else → `on_track`.
 
-No other tool writes `tracks.status` — there is no `kt_update_track` tool and no read-time derivation step. A read (this tool, `kt_list_tracks`, `kt_get_project_status`) simply selects the stored value.
+A track's `status` never reads another track's `status` — only local facts of the track itself and its direct dependencies. This is a deliberate hard rule: it keeps the computation a single flat query with no recursion.
+
+Because `status` only looks one hop deep, it can miss a problem further up the dependency chain: a track can read `status: "done"` (its own work is complete and its direct dependencies are locally OK) while a dependency two or more hops away is still broken. The separate `effective_done` boolean (`own_done` AND no active pivot AND every *transitive* dependency is `own_done` with no active pivot) is the safe-to-build-on signal — `own_done: true, effective_done: false` is a real, surfaced gap, not a bug (see `kt_render_roadmap`, §3.13, and `kt_get_next_steps`, §3.8, both of which key off `effective_done` rather than `status` for exactly this reason). An empty track (zero items) is never `done` — `own_done` requires at least one item.
+
+The `pivot_decision_id` field returned above is a pointer to the `decisions` row that opened the currently-active pivot, or `null` if there is none. It is set and cleared only by `kt_record_decision` (§3.10) via its `effect: "open_pivot"` / `"resolve_pivot"` parameter — a plain `"note"` decision has no effect on it.
 
 Errors: `401`; `404` (project or track not found); `422` (malformed uuid); `500`.
 
@@ -385,7 +392,9 @@ Example output:
 { "track_id": "9c3d4e5f-..." }
 ```
 
-**Initial `status` (stored, see §3.5):** the new row's `tracks.status` is set at insert time to `on_track`, unless at least one track listed in `depends_on` does not yet have `status = 'done'`, in which case it is set to `blocked` instead. This is one of exactly two write paths that ever set `tracks.status` — the other is `kt_record_decision` (§3.10), which moves a track to `pivot_pending`.
+**No initial status write (T2.16):** `status` is derived, not stored (§3.5), so `kt_create_track` never writes it. A brand-new track with no items reads `on_track` (an empty track is never `done`); if any `depends_on` track is not yet `effective_done` it will immediately read `blocked` once the view is queried.
+
+**Dependency completeness is a warning, not a hard gate.** If any track listed in `depends_on` is not currently `effective_done`, creation still succeeds — the response includes a `warnings: string[]` field naming the not-yet-complete dependency ids. This is a deliberate T2.16 decision: blocking creation on an incomplete dependency would make it impossible to pre-declare a track's place in a plan before its prerequisites finish, which is a normal and expected planning sequence. `warnings` is omitted (not an empty array) when there is nothing to warn about.
 
 **Cycle check (systemic invariant):** before insert, the server runs a full topological-sort validation of the project's track-dependency graph *including the proposed new edges* (`src/domain/dependency-graph.ts`, shared with `kt_create_item`). Duplicate ids inside `depends_on` are silently de-duplicated, not an error. Note that with the mandated v1 tool set there is in fact no operation that can introduce an edge pointing *back* to a freshly created node (there is no "add dependency to an existing track" tool), so a true cycle cannot occur through track creation alone today — the check is implemented anyway as a systemic invariant enforced identically at both `kt_create_track` and `kt_create_item`, so the server fails safe the moment any future tool (e.g. a hypothetical `kt_add_track_dependency`) is added, rather than only being caught then.
 
@@ -442,7 +451,7 @@ Input schema:
 Algorithm (`src/domain/next-steps.ts`), fully deterministic:
 1. Select every item with `status = 'pending'`.
 2. Keep only items where every `depends_on_item_id` has `status = 'done'` (or the item has no dependencies).
-3. Drop items whose track has stored `status = 'blocked'` (`tracks.status`, §3.5 — a plain `WHERE`, no computation needed) — a track-level block always wins over an individually-ready item.
+3. Drop items whose track is not `dependenciesEffectivelyDone` — i.e. at least one **direct** dependency of the track is not `effective_done` (§3.5). This is deliberately keyed off `effective_done`, not the track's own derived `status`: a track can read `status: "on_track"` while a dependency two-plus hops away is broken (the same-hop `status` computation can't see that far), and an item in that track must still be excluded. Checking `effective_done` per direct dependency closes that gap.
 4. Order the survivors by: track status priority (`on_track` before `pivot_pending`, since a track under active reconsideration is deprioritized until the pivot is resolved), then `sequence_position` ascending, then `created_at` ascending.
 5. Take the top `KNOTRACK_NEXT_STEPS_LIMIT` (default 5, §7).
 6. `reason` is generated from a fixed template:
@@ -524,21 +533,28 @@ Input schema:
     "track_id": { "type": "string", "format": "uuid" },
     "title": { "type": "string", "minLength": 1, "maxLength": 300 },
     "rationale": { "type": "string", "minLength": 1, "maxLength": 5000 },
-    "what_changed": { "type": "string", "minLength": 1, "maxLength": 5000 }
+    "what_changed": { "type": "string", "minLength": 1, "maxLength": 5000 },
+    "effect": { "type": "string", "enum": ["note", "open_pivot", "resolve_pivot"], "default": "note" },
+    "expected_pivot_decision_id": { "type": "string", "format": "uuid" }
   },
   "required": ["project_id", "track_id", "title", "rationale", "what_changed"],
   "additionalProperties": false
 }
 ```
+`expected_pivot_decision_id` is required if and only if `effect: "resolve_pivot"`, and rejected (`422`) if supplied with any other `effect`.
 
 Example output:
 ```json
 { "decision_id": "c4d5e6f7-..." }
 ```
 
-**Side effect on `tracks.status` (stored, see §3.5):** in the same transaction as the `decisions` insert, the server sets `track_id`'s `tracks.status` to `pivot_pending` — recording a decision is, by definition, the track pivoting on something, and this is one of exactly two write paths for `tracks.status` (the other being `kt_create_track`, §3.6, at creation time).
+**Effect on the track's pivot pointer (T2.16, see §3.5) — a plain `"note"` has no side effect at all.** Only `open_pivot` and `resolve_pivot` touch `tracks.pivot_decision_id`, and both are compare-and-set transactions guarded against races, in the same transaction as inserting the decision row:
 
-Errors: `401`; `404` (project or track not found); `422` (`title`, `rationale`, or `what_changed` empty); `500`.
+- `effect: "note"` (the default) — inserts the decision row only. No change to the track's pivot state. This replaced an earlier design where every decision set the track to `pivot_pending`; a decision that is just a record of reasoning, with no open question attached, is common and should not force the track into a pivot state.
+- `effect: "open_pivot"` — inserts the decision row, then sets `tracks.pivot_decision_id` to this new decision's id, guarded by `WHERE pivot_decision_id IS NULL`. If the track already has an active pivot, this is a `409 CONFLICT` (opening a second pivot on top of an unresolved one is rejected, not silently overwritten).
+- `effect: "resolve_pivot"` — requires `expected_pivot_decision_id` (the id the caller last read as the track's active pivot). Inserts the decision row (with `resolves_decision_id` set to that id), then clears `tracks.pivot_decision_id`, guarded by `WHERE pivot_decision_id = $expected_pivot_decision_id`. Two ways this can fail, both `409 CONFLICT`, distinguished in the error message: the track has no active pivot at all ("no active pivot to resolve"), or the track's active pivot is a *different* decision than the one the caller expected ("pivot changed since you last read this track" — e.g. a concurrent caller already resolved it and a new one may have opened since). Either way nothing is overwritten silently.
+
+Errors: `401`; `404` (project or track not found); `409` (see above — pivot compare-and-set conflicts); `422` (`title`, `rationale`, or `what_changed` empty; `expected_pivot_decision_id` missing for `resolve_pivot` or present for any other `effect`); `500`.
 
 ### 3.11 `kt_update_item_status`
 
@@ -641,8 +657,13 @@ _Generated 2026-08-23T14:30:00.000Z_
 
 ## Billing sync — blocked
 - [ ] Define webhook contract
+
+## Payments core — done (dependency chain incomplete)
+- [x] Only item
 ```
 Item checkbox rendering: `[x]` for `done`, `[ ]` for `pending`, `[~]` for `in_progress`, `[!]` for `blocked`.
+
+**`(dependency chain incomplete)` annotation (T2.16).** `status` only looks one hop deep (§3.5), so a track can read `done` — its own items are complete and its direct dependencies are locally OK — while a dependency two-plus hops away is still broken, i.e. `own_done: true` but `effective_done: false`. Silently showing `done` on a broken foundation would be a false claim, so both renderers append this annotation whenever that gap holds: `" (dependency chain incomplete)"` in markdown headings, `, dependency chain incomplete` (inside the parens) in mermaid node labels. A track with no gap (including any track whose `status` isn't `done` at all) gets no annotation.
 
 **`mermaid` format** — a `graph TD` of track-level dependencies, one node per track labeled `"{title} ({status})"` (double quotes inside a title are replaced with single quotes and `\n`/`\r\n` line breaks stripped (implemented via `/\r?\n/g`, so a lone `\r` is not matched and passes through), to keep the diagram syntactically valid for the newline forms actually handled):
 ```
@@ -651,7 +672,7 @@ graph TD
   t_9c3d4e5f["Billing sync (blocked)"]
   t_9c3d4e5f --> t_8b2e1a10
 ```
-(Edge `A --> B` means "A depends on B", matching the `depends_on_track_ids` direction used everywhere else in this document. Here, Billing sync depends on Auth overhaul, which is not yet `done` — consistent with `kt_create_track`'s rule (§3.6) for setting a new track's initial `status` to `blocked`.)
+(Edge `A --> B` means "A depends on B", matching the `depends_on_track_ids` direction used everywhere else in this document. Here, Billing sync depends on Auth overhaul, which is not `effective_done` — consistent with `kt_create_track`'s warning (§3.6) for a new track whose listed dependency isn't yet complete.)
 
 Example output:
 ```json
@@ -900,13 +921,13 @@ depending on it.
 
 ## Appendix A — PostgreSQL Schema
 
-**The authoritative schema is `migrations/001_init.sql`** (plus `002_projects_unique_source_ref.sql`, `003_drift_flags_open_unique.sql`, `004_adapters_key_version.sql`, and `005_tracks_sync_timestamps.sql`), applied by the custom runner at `scripts/migrate.ts` (§1). It is not reproduced here.
+**The authoritative schema is `migrations/001_init.sql`** (plus `002_projects_unique_source_ref.sql`, `003_drift_flags_open_unique.sql`, `004_adapters_key_version.sql`, `005_tracks_sync_timestamps.sql`, and `006_derived_track_status.sql`), applied by the custom runner at `scripts/migrate.ts` (§1). It is not reproduced here.
 
 An earlier draft of this Appendix carried a full hand-copied DDL block that, by the time this note was written, had drifted from the schema actually built — across nearly every table, not just the adapter-credential shape already called out in §5. Concretely, the old block: named a fictional `adapter_credentials` table instead of the real `adapters` table (§5); described `projects` with a `source_ref` that's actually nullable and a `projects.adapters` column that was never built; put a `project_id` column directly on `items` that doesn't exist (item→project scoping goes through `track_id` only); gave `tracks` two `last_github_sync_at`/`last_linear_sync_at` columns that, at the time this note was written, didn't exist anywhere in the real schema — that gap is now closed by `migrations/005_tracks_sync_timestamps.sql` (see the Appendix B note on `SYNC_DRIFT`, below); described `drift_flags` with a six-value `flag_type` plus separate `severity` and `status` columns, where the real table has just a two-value `kind` plus `resolved_at` (see `src/db/queries/drift-flags.ts`'s header comment); and omitted the `api_tokens` table and the `set_updated_at` trigger infrastructure entirely.
 
 Keeping a second, hand-maintained copy of the DDL in this doc is exactly what let that drift accumulate silently — the same lesson `src/crypto/credential-cipher.ts` and `src/db/queries/adapters.ts` already document for the credential-storage piece specifically. This Appendix now points at the single source of truth instead of duplicating it. For the full table reference — columns, constraints, indexes, and the rationale behind each design choice — see `docs/DATABASE_SCHEMA.md`; for how each table maps to a tool's request/response contract, see this document's §3.
 
-Note on `items.status`: **item status is stored** and is the terminal write target of `kt_update_item_status`, which can set it to any of the four values. `tracks.status` is also stored (§3.5), but with a narrower set of writers: only `kt_create_track` (initial value) and `kt_record_decision` (→ `pivot_pending`) ever write it — there is no tool analogous to `kt_update_item_status` for tracks.
+Note on `items.status`: **item status is stored** and is the terminal write target of `kt_update_item_status`, which can set it to any of the four values. Track status is different (T2.16, §3.5): it is **derived**, computed at read time by the `track_readiness` view from `tracks.pivot_decision_id`, each track's own item completion, and its direct dependencies' local state — no tool writes a track status value directly, and there is no tool analogous to `kt_update_item_status` for tracks.
 
 ---
 
@@ -941,4 +962,6 @@ similar name — it's never raised anywhere in this build.
 ## Appendix C — Track & Item Status Enums (reference)
 
 - **Item status** (`items.status`, stored): `pending` | `in_progress` | `done` | `blocked`. Set only via `kt_update_item_status`; defaults to `pending` at creation.
-- **Track status** (`tracks.status`, stored): `on_track` | `pivot_pending` | `blocked` | `done`. Set at creation (`kt_create_track`) and by `kt_record_decision` (→ `pivot_pending`); no other tool changes it.
+- **Track status** (derived, T2.16 — see §3.5): `on_track` | `pivot_pending` | `blocked` | `done`. Computed at read time by the `track_readiness` view from three inputs: whether the track has an active pivot (`tracks.pivot_decision_id IS NOT NULL`), whether the track itself is `own_done` (≥1 item, all done-equivalent), and whether every **direct** dependency is locally OK (that dependency's own `own_done` with no active pivot). `status` never reads another track's `status`. There is no stored `tracks.status` column and no tool sets it directly.
+- **Track `effective_done`** (derived, T2.16): `own_done` AND no active pivot AND every **transitive** dependency is `own_done` with no active pivot. This is the safe-to-build-on signal, distinct from `status`, precisely because `status` only checks one hop — `own_done: true, effective_done: false` is a real and expected gap (a broken foundation two-plus hops away), surfaced rather than hidden by `kt_render_roadmap` (§3.13) and enforced by `kt_get_next_steps` (§3.8).
+- **Track pivot pointer** (`tracks.pivot_decision_id`, stored): `NULL`, or the id of the `decisions` row that opened the currently-active pivot. Set by `kt_record_decision` with `effect: "open_pivot"`; cleared by `kt_record_decision` with `effect: "resolve_pivot"`. A plain `effect: "note"` decision (the default) never touches it.
