@@ -128,15 +128,19 @@ export async function recordDecisionService(
       });
     }
 
-    const decision = await insertDecision(client, {
-      projectId: input.project_id,
-      trackId: input.track_id,
-      title: input.title,
-      rationale: input.rationale,
-      whatChanged: input.what_changed,
-      effect: 'resolve_pivot',
-      resolvesDecisionId: expectedPivotDecisionId,
-    });
+    // Guarded UPDATE before the decision INSERT (PR #16 Codex review):
+    // `resolveTrackPivot` needs only `expectedPivotDecisionId`, which is
+    // already in hand — it doesn't need the new decision row's id the way
+    // `openTrackPivot` above does. Running it first means the loser of a
+    // concurrent resolve race never reaches the INSERT at all: it fails
+    // here, on the same affected-row-0 path as the pre-check race above,
+    // and gets the documented 409. Insert-then-update would instead let
+    // both racers insert (each satisfying `decisions_resolves_decision_id
+    // _uq` momentarily under READ COMMITTED, since neither sees the
+    // other's uncommitted row) and only the second INSERT's own unique-
+    // index violation would fail — an ordinary driver error, which
+    // `runTool` has no KtError to translate and so surfaces as a raw 500
+    // instead of a 409.
     const affected = await resolveTrackPivot(client, input.track_id, expectedPivotDecisionId);
     if (affected === 0) {
       // A genuine race: pivot state changed between the check above and
@@ -149,6 +153,15 @@ export async function recordDecisionService(
         current_pivot_decision_id: currentPivotDecisionId,
       });
     }
+    const decision = await insertDecision(client, {
+      projectId: input.project_id,
+      trackId: input.track_id,
+      title: input.title,
+      rationale: input.rationale,
+      whatChanged: input.what_changed,
+      effect: 'resolve_pivot',
+      resolvesDecisionId: expectedPivotDecisionId,
+    });
     return { decision_id: decision.id };
   });
 }

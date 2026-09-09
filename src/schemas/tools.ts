@@ -150,6 +150,18 @@ export const recordDecisionInputSchema = z
         path: ['expected_pivot_decision_id'],
       });
     }
+    // PR #16 Codex review: the field is only meaningful on the resolve
+    // path — the handler never reads it for 'note'/'open_pivot' — so a
+    // caller that sends it with the wrong effect most likely meant to
+    // resolve a pivot and got the effect wrong. Rejecting it turns that
+    // into a clear validation error instead of a silently-ignored field.
+    if (val.effect !== 'resolve_pivot' && val.expected_pivot_decision_id !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'expected_pivot_decision_id is only valid when effect is "resolve_pivot"',
+        path: ['expected_pivot_decision_id'],
+      });
+    }
   });
 
 export const updateItemStatusInputSchema = z

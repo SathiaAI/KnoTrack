@@ -243,6 +243,49 @@ describe('kt_record_decision', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
+  it('negative (T2.16, PR #16 Codex review): two concurrent resolves of the same pivot race cleanly — one wins, the loser gets CONFLICT, not an unhandled error', async () => {
+    const { projectId, trackId } = await makeProjectAndTrack();
+    const opened = await recordDecisionService(pool, config, {
+      project_id: projectId,
+      track_id: trackId,
+      title: 'Pivot',
+      rationale: 'R',
+      what_changed: 'C',
+      effect: 'open_pivot',
+    });
+
+    const resolveAttempt = () =>
+      recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Resolved',
+        rationale: 'R2',
+        what_changed: 'C2',
+        effect: 'resolve_pivot',
+        expected_pivot_decision_id: opened.decision_id,
+      });
+
+    const results = await Promise.allSettled([resolveAttempt(), resolveAttempt()]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // The loser must be the documented 409 conflict (guarded UPDATE runs
+    // before the decision INSERT — see record-decision.ts) — not a raw
+    // Postgres unique_violation surfacing as an unhandled 500, which is
+    // what an insert-before-update ordering would produce here.
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'CONFLICT' });
+
+    expect(await pivotDecisionId(trackId)).toBeNull();
+    const resolveRows = await pool.query(
+      `SELECT resolves_decision_id FROM decisions WHERE track_id = $1 AND effect = 'resolve_pivot'`,
+      [trackId],
+    );
+    expect(resolveRows.rows).toHaveLength(1);
+    expect(resolveRows.rows[0]).toMatchObject({ resolves_decision_id: opened.decision_id });
+  });
+
   it('negative: 404 when track_id belongs to a different project than project_id', async () => {
     // One flat API-token pool, no per-project scoping (src/server/auth.ts,
     // TRD §4) — mirrors get-track.test.ts's GTRK-08/09 cross-project case.
