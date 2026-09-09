@@ -115,10 +115,16 @@ ALTER TABLE tracks
 CREATE UNIQUE INDEX decisions_resolves_decision_id_uq
   ON decisions (resolves_decision_id) WHERE resolves_decision_id IS NOT NULL;
 
--- resolves_decision_id only makes sense on a resolve_pivot row.
+-- resolves_decision_id and effect = 'resolve_pivot' come as a pair — set
+-- together or not at all (docs/DATABASE_SCHEMA.md's decisions table).
+-- A one-directional CHECK here would let a resolve_pivot row through with
+-- no resolves_decision_id (nothing to resolve); the app never writes that
+-- shape (record-decision.ts only sets resolvesDecisionId when effect is
+-- 'resolve_pivot', and always together), so the biconditional the docs
+-- already describe just closes the gap for any other writer.
 ALTER TABLE decisions
   ADD CONSTRAINT decisions_resolves_requires_effect
-    CHECK (resolves_decision_id IS NULL OR effect = 'resolve_pivot');
+    CHECK ((resolves_decision_id IS NOT NULL) = (effect = 'resolve_pivot'));
 
 -- rationale required for every decision from here on — NOT VALID first
 -- since existing rows were just backfilled above in the same transaction

@@ -111,16 +111,36 @@ export const recordSessionSummaryInputSchema = z
 // required only when `effect` is 'resolve_pivot', enforced below since
 // zod's `.enum()`-conditional-required isn't expressible as plain field
 // constraints on a `.strict()` object.
+//
+// The field shape is factored out so it can back two schemas: the plain
+// `.strict()` object below is what gets registered with the MCP SDK, and
+// the refined one (with `.superRefine()`) is what the handler parses
+// against. They must stay in sync — same shape — since they're two views
+// of the same input.
+const recordDecisionShape = {
+  project_id: uuid(),
+  track_id: uuid(),
+  title: z.string().min(1).max(300),
+  rationale: z.string().min(1).max(5000),
+  what_changed: z.string().min(1).max(5000),
+  effect: z.enum(['note', 'open_pivot', 'resolve_pivot']).default('note'),
+  expected_pivot_decision_id: uuid().optional(),
+};
+
+// Registration-only schema (PR #16 CodeRabbit review): the SDK's
+// `tools/list` builds JSON Schema via `normalizeObjectSchema`, which looks
+// for a `.shape` — present on a plain ZodObject, absent on the ZodEffects
+// wrapper `.superRefine()` produces. Registering the refined schema directly
+// therefore made `tools/list` advertise `kt_record_decision` with an empty
+// input schema (silently, no error) even though the handler still validated
+// real fields. This plain object carries the same shape without the
+// wrapper, so clients see the real parameter list; `.superRefine()`'s
+// cross-field check still runs, via `recordDecisionInputSchema`, inside the
+// handler below.
+export const recordDecisionRegistrationSchema = z.object(recordDecisionShape).strict();
+
 export const recordDecisionInputSchema = z
-  .object({
-    project_id: uuid(),
-    track_id: uuid(),
-    title: z.string().min(1).max(300),
-    rationale: z.string().min(1).max(5000),
-    what_changed: z.string().min(1).max(5000),
-    effect: z.enum(['note', 'open_pivot', 'resolve_pivot']).default('note'),
-    expected_pivot_decision_id: uuid().optional(),
-  })
+  .object(recordDecisionShape)
   .strict()
   .superRefine((val, ctx) => {
     if (val.effect === 'resolve_pivot' && val.expected_pivot_decision_id === undefined) {

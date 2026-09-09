@@ -2,7 +2,11 @@
 import type { Pool, PoolClient } from 'pg';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
-import { recordDecisionInputSchema, type RecordDecisionInput } from '../../schemas/tools.js';
+import {
+  recordDecisionInputSchema,
+  recordDecisionRegistrationSchema,
+  type RecordDecisionInput,
+} from '../../schemas/tools.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
 import { findTrackById, openTrackPivot, resolveTrackPivot } from '../../db/queries/tracks.js';
 import { insertDecision } from '../../db/queries/decisions.js';
@@ -163,7 +167,7 @@ export function registerRecordDecisionTool(
         "Logs a decision against a track. `effect: 'open_pivot'` opens a pivot on that track " +
         "(pivot_pending); `effect: 'resolve_pivot'` (with expected_pivot_decision_id) closes one; " +
         "the default `effect: 'note'` just logs the decision with no lifecycle side effect.",
-      inputSchema: recordDecisionInputSchema,
+      inputSchema: recordDecisionRegistrationSchema,
     },
     async (rawArgs: unknown) => {
       const input = recordDecisionInputSchema.parse(rawArgs);

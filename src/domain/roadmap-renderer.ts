@@ -20,9 +20,14 @@ export interface RoadmapTrack {
 
 /** True when a track's own items are finished but its dependency chain
  * isn't — the specific gap `status` alone can't show (see RoadmapTrack's
- * doc comment above). */
+ * doc comment above). Gated on `status === 'done'` per docs/TRD.md's
+ * "(dependency chain incomplete)" section: a track whose status is
+ * `pivot_pending` or `blocked` already names its own problem, so
+ * `own_done`/`effective_done` — which only look at completion, not at an
+ * active pivot or a broken direct dependency — must not also stamp this
+ * annotation on it (PR #16 CodeRabbit review). */
 function hasUnresolvedDependencyGap(track: RoadmapTrack): boolean {
-  return track.own_done === true && track.effective_done === false;
+  return track.status === 'done' && track.own_done === true && track.effective_done === false;
 }
 
 const DEPENDENCY_GAP_NOTE = 'dependency chain incomplete';
