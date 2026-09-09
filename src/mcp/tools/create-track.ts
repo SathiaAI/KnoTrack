@@ -82,7 +82,7 @@ export async function createTrackService(
       sourceDocRef: input.source_doc_ref,
     });
 
-    await insertTrackDependencies(client, track.id, dependsOn);
+    await insertTrackDependencies(client, track.id, dependsOn, input.project_id);
 
     const unfinishedDeps = dependsOn.filter((id) => effectiveDoneByTrack.get(id) === false);
     const warnings =

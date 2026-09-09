@@ -304,17 +304,20 @@ describe('kt_record_decision', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  describe('migration 007 (PR #16 escalated finding 2): decisions_resolves_same_track_fk', () => {
-    // kt_record_decision itself can never produce a cross-track
-    // resolves_decision_id (expected_pivot_decision_id is always looked up
-    // scoped to input.track_id — see record-decision.ts), so this
-    // constraint is unreachable through the service layer by construction.
-    // These tests go straight at the database with raw SQL, the way a
-    // future writer, a migration, or a psql session could, which is
-    // exactly the gap the frontier-panel review (project doc
-    // "PR #16 escalated findings — frontier panel review", finding 2)
-    // flagged: nothing below the application layer enforced this before
-    // migration 007.
+  describe('migrations 007 + 008 (PR #16 escalated findings 1 & 2): resolves_decision_id / pivot_decision_id integrity', () => {
+    // kt_record_decision itself can never produce a cross-track or
+    // wrong-effect resolves_decision_id (expected_pivot_decision_id is
+    // always looked up scoped to input.track_id — see record-decision.ts),
+    // so these constraints are unreachable through the service layer by
+    // construction. These tests go straight at the database with raw SQL,
+    // the way a future writer, a migration, or a psql session could,
+    // which is exactly the gap the frontier-panel review (project doc
+    // "PR #16 escalated findings — frontier panel review") flagged.
+    //
+    // Migration 007 added a same-track-only FK (decisions_resolves_same_track_fk);
+    // migration 008 supersedes it with a same-track-AND-open_pivot FK
+    // (decisions_resolves_open_pivot_fk) — a strict superset — so every
+    // assertion below targets the current (post-008) constraint name.
 
     it('negative: a raw INSERT with resolves_decision_id pointing at a decision on a different track is rejected by the database', async () => {
       const trackA = await makeProjectAndTrack();
@@ -337,11 +340,65 @@ describe('kt_record_decision', () => {
         ),
       ).rejects.toMatchObject({
         code: '23503', // foreign_key_violation
-        constraint: 'decisions_resolves_same_track_fk',
+        constraint: 'decisions_resolves_open_pivot_fk',
       });
     });
 
-    it('positive: a raw INSERT with resolves_decision_id pointing at a decision on the same track is accepted', async () => {
+    it('negative (migration 008, finding 2 full fix): a raw INSERT resolving a same-track decision that is NOT an open_pivot is rejected', async () => {
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      // A same-track plain 'note' decision — same-track FK alone (007)
+      // would have let this through; only the effect-typed FK (008) can
+      // tell it apart from a real open_pivot.
+      const note = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Just a note',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'note',
+      });
+
+      await expect(
+        pool.query(
+          `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+           VALUES ($1, $2, 'Resolve a non-pivot', 'R', 'C', 'resolve_pivot', $3)`,
+          [projectId, trackId, note.decision_id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23503',
+        constraint: 'decisions_resolves_open_pivot_fk',
+      });
+    });
+
+    it('negative (migration 008, finding 2 full fix): a raw INSERT with resolves_decision_id set but a NULL track_id is rejected', async () => {
+      // Astra's original concern: under plain MATCH SIMPLE, a resolve_pivot
+      // row with a NULL track_id would bypass the composite FK entirely.
+      // decisions_track_id_required_for_pivots (a CHECK, not the FK) is
+      // what actually closes this.
+      const { projectId, trackId } = await makeProjectAndTrack();
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      await expect(
+        pool.query(
+          `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+           VALUES ($1, NULL, 'Resolve with no track', 'R', 'C', 'resolve_pivot', $2)`,
+          [projectId, opened.decision_id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23514', // check_violation
+        constraint: 'decisions_track_id_required_for_pivots',
+      });
+    });
+
+    it('positive: a raw INSERT with resolves_decision_id pointing at an open_pivot decision on the same track is accepted', async () => {
       const { projectId, trackId } = await makeProjectAndTrack();
 
       const opened = await recordDecisionService(pool, config, {
@@ -361,6 +418,29 @@ describe('kt_record_decision', () => {
       );
 
       expect(result.rows).toHaveLength(1);
+    });
+
+    it('negative (migration 008, finding 1): a raw UPDATE pointing tracks.pivot_decision_id at a same-track decision that is NOT an open_pivot is rejected', async () => {
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const note = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Just a note',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'note',
+      });
+
+      await expect(
+        pool.query('UPDATE tracks SET pivot_decision_id = $1 WHERE id = $2', [
+          note.decision_id,
+          trackId,
+        ]),
+      ).rejects.toMatchObject({
+        code: '23503',
+        constraint: 'tracks_pivot_decision_fk',
+      });
     });
   });
 });
