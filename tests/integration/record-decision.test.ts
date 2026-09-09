@@ -303,4 +303,64 @@ describe('kt_record_decision', () => {
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
+
+  describe('migration 007 (PR #16 escalated finding 2): decisions_resolves_same_track_fk', () => {
+    // kt_record_decision itself can never produce a cross-track
+    // resolves_decision_id (expected_pivot_decision_id is always looked up
+    // scoped to input.track_id — see record-decision.ts), so this
+    // constraint is unreachable through the service layer by construction.
+    // These tests go straight at the database with raw SQL, the way a
+    // future writer, a migration, or a psql session could, which is
+    // exactly the gap the frontier-panel review (project doc
+    // "PR #16 escalated findings — frontier panel review", finding 2)
+    // flagged: nothing below the application layer enforced this before
+    // migration 007.
+
+    it('negative: a raw INSERT with resolves_decision_id pointing at a decision on a different track is rejected by the database', async () => {
+      const trackA = await makeProjectAndTrack();
+      const trackB = await makeProjectAndTrack();
+
+      const openedOnA = await recordDecisionService(pool, config, {
+        project_id: trackA.projectId,
+        track_id: trackA.trackId,
+        title: 'Pivot on A',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      await expect(
+        pool.query(
+          `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+           VALUES ($1, $2, 'Cross-track resolve', 'R', 'C', 'resolve_pivot', $3)`,
+          [trackB.projectId, trackB.trackId, openedOnA.decision_id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23503', // foreign_key_violation
+        constraint: 'decisions_resolves_same_track_fk',
+      });
+    });
+
+    it('positive: a raw INSERT with resolves_decision_id pointing at a decision on the same track is accepted', async () => {
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      const result = await pool.query<{ id: string }>(
+        `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+         VALUES ($1, $2, 'Same-track resolve', 'R', 'C', 'resolve_pivot', $3)
+         RETURNING id`,
+        [projectId, trackId, opened.decision_id],
+      );
+
+      expect(result.rows).toHaveLength(1);
+    });
+  });
 });

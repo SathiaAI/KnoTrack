@@ -492,6 +492,9 @@ surface (`kt_record_event` vs. `kt_record_decision`).
 - `decisions_resolves_decision_id_uq` — partial unique index on `(resolves_decision_id) WHERE resolves_decision_id IS NOT NULL`. A given pivot-opening decision can be resolved by at most one `resolve_pivot` row, ever — this is what makes `kt_record_decision`'s resolve path a real compare-and-set rather than one of several possible resolutions racing.
 - `decisions_resolves_requires_effect` — `CHECK ((resolves_decision_id IS NOT NULL) = (effect = 'resolve_pivot'))`: the two fields are set together or not at all.
 
+**Constraint (added by migration 007, PR #16 escalated finding 2):**
+- `decisions_resolves_same_track_fk` — `FOREIGN KEY (resolves_decision_id, track_id) REFERENCES decisions (id, track_id)`, reusing `decisions_id_track_id_key` from the other direction. Migration 006 enforced "a pivot pointer targets a decision on the same track" for `tracks.pivot_decision_id`, but missed the identical invariant for `resolves_decision_id`, so nothing at the database level stopped a `resolve_pivot` row from pointing at a decision on a different track (or a different project). `kt_record_decision` itself can never produce that shape (`expected_pivot_decision_id` is always looked up scoped to the target track), so this is defense-in-depth against any other writer, not a fix to an app-level bug. It does not yet verify the target decision's `effect = 'open_pivot'` (a decision could still resolve a plain `'note'` on the same track) — that half, plus the same fix for `tracks.pivot_decision_id`'s own effect gap, is a follow-up migration using a generated-column composite FK with `MATCH FULL`.
+
 **Indexes:** `idx_decisions_project_id` on `(project_id)`, `idx_decisions_track_id` on
 `(track_id)`, `decisions_track_id_effect_idx` on `(track_id, effect)` (migration 006,
 supporting the pivot-lookup queries in `kt_record_decision`).
