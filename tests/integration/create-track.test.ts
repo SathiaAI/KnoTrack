@@ -183,10 +183,10 @@ describe('kt_create_track', () => {
     // B -> A already exists (legitimate edge, created above); A -> B would
     // close a cycle.
     await expect(
-      pool.query('INSERT INTO track_dependencies (track_id, depends_on_track_id) VALUES ($1, $2)', [
-        a.track_id,
-        b.track_id,
-      ]),
+      pool.query(
+        'INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES ($1, $2, $3)',
+        [a.track_id, b.track_id, projectId],
+      ),
     ).rejects.toThrow(/dependency cycle/);
   });
 
@@ -215,12 +215,12 @@ describe('kt_create_track', () => {
     // A -> B already exists structurally as a legitimate edge; force B -> A
     // directly to create a genuine cycle in stored data.
     await pool.query(
-      'INSERT INTO track_dependencies (track_id, depends_on_track_id) VALUES ($1, $2)',
-      [a.track_id, b.track_id],
+      'INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES ($1, $2, $3)',
+      [a.track_id, b.track_id, projectId],
     );
     await pool.query(
-      'INSERT INTO track_dependencies (track_id, depends_on_track_id) VALUES ($1, $2)',
-      [b.track_id, a.track_id],
+      'INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES ($1, $2, $3)',
+      [b.track_id, a.track_id, projectId],
     );
     await pool.query(
       'ALTER TABLE track_dependencies ENABLE TRIGGER trg_track_dependencies_no_cycle',

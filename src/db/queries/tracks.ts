@@ -180,18 +180,19 @@ export async function insertTrackDependencies(
   db: Queryable,
   trackId: string,
   dependsOn: string[],
+  projectId: string,
 ): Promise<void> {
   const deduped = Array.from(new Set(dependsOn));
   if (deduped.length === 0) return;
   const values: string[] = [];
   const params: string[] = [];
   deduped.forEach((depId, index) => {
-    values.push(`($1, $${index + 2})`);
+    values.push(`($1, $${index + 2}, $${deduped.length + 2})`);
     params.push(depId);
   });
   await db.query(
-    `INSERT INTO track_dependencies (track_id, depends_on_track_id) VALUES ${values.join(', ')}`,
-    [trackId, ...params],
+    `INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES ${values.join(', ')}`,
+    [trackId, ...params, projectId],
   );
 }
 
