@@ -51,7 +51,8 @@ ALTER TABLE tracks DROP CONSTRAINT IF EXISTS tracks_id_project_key;
 
 ALTER TABLE decisions DROP CONSTRAINT IF EXISTS decisions_resolves_open_pivot_fk;
 ALTER TABLE decisions DROP COLUMN IF EXISTS resolves_target_effect;
-ALTER TABLE decisions DROP CONSTRAINT IF EXISTS decisions_track_id_required_for_pivots;
+DROP TRIGGER IF EXISTS trg_decisions_track_id_required_for_pivots ON decisions;
+DROP FUNCTION IF EXISTS reject_pivot_decision_without_track();
 
 ALTER TABLE decisions
   ADD CONSTRAINT decisions_resolves_same_track_fk

@@ -54,11 +54,38 @@
 -- is NULL for every non-resolving decision, which is what triggers the
 -- skip) and closes Astra's real underlying concern — a resolve_pivot row
 -- with a NULL track_id bypassing the FK under MATCH SIMPLE — with a
--- narrow CHECK constraint instead: track_id must be non-NULL whenever
--- effect <> 'note'. That was already true of every row kt_record_decision
--- has ever written; this just makes the database refuse any future
--- writer that tries to violate it, without touching the unrelated,
--- legitimate nullable-track_id feature for plain project-level notes.
+-- narrow rule instead: track_id must be non-NULL whenever effect <> 'note'.
+-- That was already true of every row kt_record_decision has ever written;
+-- this just makes the database refuse any future writer that tries to
+-- violate it, without touching the unrelated, legitimate nullable-track_id
+-- feature for plain project-level notes.
+--
+-- A second correction, found by Codex's automated review of this same PR
+-- (not by the original panel or by manual testing): the first draft of
+-- this migration enforced that rule with a plain CHECK constraint
+-- (`decisions_track_id_required_for_pivots CHECK (effect = 'note' OR
+-- track_id IS NOT NULL)`). A CHECK constraint re-validates on *every*
+-- row modification, not just INSERT — including the row modification
+-- `decisions.track_id ... ON DELETE SET NULL` (migrations/001_init.sql)
+-- performs automatically when a track is deleted. `docs/DATABASE_SCHEMA.md`
+-- documents this SET NULL as the mechanism a hard project delete or a
+-- GDPR-style legal-erasure operation relies on to preserve decision
+-- history after the track itself is gone. A CHECK constraint would reject
+-- that exact SET NULL for any decision that ever recorded an
+-- `open_pivot`/`resolve_pivot`, breaking the documented erasure path —
+-- reproduced directly against a live database while responding to this
+-- finding (`DELETE FROM tracks ...` on a track with an `open_pivot`
+-- decision raised `violates check constraint
+-- "decisions_track_id_required_for_pivots"`).
+--
+-- The fix is a `BEFORE INSERT` (not `INSERT OR UPDATE`) trigger instead:
+-- `kt_record_decision` is the only path that ever writes a `decisions`
+-- row (`docs/PRD.md` §5.2: the codebase never issues `UPDATE`/`DELETE`
+-- against `decisions` at the application layer — it's append-only by
+-- convention), so a trigger that only fires on INSERT closes Astra's gap
+-- exactly where it can occur while leaving the FK-cascade's own internal
+-- UPDATE untouched. Verified against a live database: a malformed fresh
+-- INSERT is still rejected, and the hard-delete cascade now succeeds.
 --
 -- ============================================================
 
@@ -102,12 +129,28 @@ ALTER TABLE tracks
 
 -- Closes the actual gap Astra identified (a resolve_pivot row with a
 -- NULL track_id bypassing the composite FK under MATCH SIMPLE) without
--- the MATCH FULL approach's fatal side effect documented above. No
--- backfill/NOT VALID needed: kt_record_decision has always set track_id
--- for every non-'note' decision.
-ALTER TABLE decisions
-  ADD CONSTRAINT decisions_track_id_required_for_pivots
-    CHECK (effect = 'note' OR track_id IS NOT NULL);
+-- the MATCH FULL approach's fatal side effect documented above. A BEFORE
+-- INSERT trigger, not a CHECK constraint — see this file's header
+-- comment for why a CHECK here would break the documented
+-- track-hard-delete/legal-erasure path (decisions.track_id ... ON DELETE
+-- SET NULL). kt_record_decision is the only path that ever writes a
+-- decisions row, and always sets track_id for every non-'note' decision,
+-- so this never rejects a legitimate write.
+CREATE FUNCTION reject_pivot_decision_without_track() RETURNS trigger AS $$
+BEGIN
+  IF NEW.effect <> 'note' AND NEW.track_id IS NULL THEN
+    RAISE EXCEPTION
+      'decisions: effect=% requires a non-NULL track_id (id=%)', NEW.effect, NEW.id
+      USING ERRCODE = '23514'; -- check_violation, consistent with this schema's other invariant-rejection errors
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_decisions_track_id_required_for_pivots
+  BEFORE INSERT ON decisions
+  FOR EACH ROW
+  EXECUTE FUNCTION reject_pivot_decision_without_track();
 
 ALTER TABLE decisions
   ADD COLUMN resolves_target_effect text
@@ -172,6 +215,25 @@ BEGIN
   -- ship, but a hard prerequisite for the next one that edits existing
   -- edges). Held for the rest of this transaction, released automatically
   -- at COMMIT/ROLLBACK — never needs an explicit unlock.
+  --
+  -- Scope of this guarantee (raised by Codex's automated review of this
+  -- PR): this lock closes the race for READ COMMITTED writers only — the
+  -- isolation level `src/db/tx.ts`'s `withTransaction` uses, and the only
+  -- one any write path in this codebase ever uses against
+  -- track_dependencies (`withReadSnapshot`'s REPEATABLE READ transactions
+  -- are READ ONLY, so they can never reach this trigger). Advisory locks
+  -- block execution order but do not affect MVCC snapshot visibility: a
+  -- REPEATABLE READ writer's reachability query would still run against
+  -- the snapshot taken at its transaction's start, so it could remain
+  -- blind to a concurrently-committed edge even after this lock releases.
+  -- (A SERIALIZABLE writer would not have this gap — Postgres's own
+  -- serializable-snapshot-isolation machinery independently detects this
+  -- exact write-skew pattern and aborts one transaction with SQLSTATE
+  -- 40001 — but SERIALIZABLE is not in use here either.) Not fixed here:
+  -- doing so would mean adding isolation-level enforcement or a retry
+  -- protocol against a writer that does not exist in this codebase today
+  -- — deferred until a real REPEATABLE READ/SERIALIZABLE writer against
+  -- this table is actually proposed.
   PERFORM pg_advisory_xact_lock(hashtext(NEW.project_id::text));
 
   -- Would there be a path from NEW.depends_on_track_id back to

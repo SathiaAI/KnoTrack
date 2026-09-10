@@ -393,9 +393,39 @@ describe('kt_record_decision', () => {
           [projectId, opened.decision_id],
         ),
       ).rejects.toMatchObject({
-        code: '23514', // check_violation
-        constraint: 'decisions_track_id_required_for_pivots',
+        code: '23514', // check_violation, raised by trg_decisions_track_id_required_for_pivots
+        message: expect.stringContaining('requires a non-NULL track_id'),
       });
+    });
+
+    it('positive (Codex review of migration 008): hard-deleting a track that has an open_pivot decision still succeeds, preserving the decision with track_id set to NULL', async () => {
+      // A BEFORE INSERT-only trigger, not a CHECK constraint, backs
+      // trg_decisions_track_id_required_for_pivots specifically so this
+      // keeps working: docs/DATABASE_SCHEMA.md documents
+      // `decisions.track_id ... ON DELETE SET NULL` as the mechanism a
+      // hard project delete / legal-erasure operation relies on to
+      // preserve decision history after the track itself is gone. A CHECK
+      // constraint (the migration's first draft, before this review
+      // caught it) would re-validate on that same SET NULL and reject it
+      // for any decision that ever recorded an open_pivot/resolve_pivot.
+      const { trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: (await pool.query('SELECT project_id FROM tracks WHERE id = $1', [trackId]))
+          .rows[0].project_id,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      await pool.query('DELETE FROM tracks WHERE id = $1', [trackId]);
+
+      const row = await pool.query('SELECT track_id, effect FROM decisions WHERE id = $1', [
+        opened.decision_id,
+      ]);
+      expect(row.rows).toMatchObject([{ track_id: null, effect: 'open_pivot' }]);
     });
 
     it('positive: a raw INSERT with resolves_decision_id pointing at an open_pivot decision on the same track is accepted', async () => {

@@ -420,6 +420,22 @@ but both real, and both prerequisites for whatever future tool edits existing ed
      reachability CTE now excludes the specific `(OLD.track_id, OLD.depends_on_track_id)`
      row from the walk when `TG_OP = 'UPDATE'`.
 
+**Scope of the advisory-lock fix (raised by Codex's automated review of this PR):** the
+lock closes the snapshot-isolation race for **READ COMMITTED** writers only — the
+isolation level `src/db/tx.ts`'s `withTransaction` uses, and the only one any write path
+in this codebase ever uses against `track_dependencies` (`withReadSnapshot`'s
+`REPEATABLE READ` transactions are `READ ONLY`, so they can never reach this trigger).
+An advisory lock blocks *execution order*, not MVCC *snapshot visibility*: a
+hypothetical `REPEATABLE READ` writer's reachability query would still run against the
+snapshot taken at its transaction's start, so it could remain blind to a
+concurrently-committed edge even after the lock releases. (A `SERIALIZABLE` writer would
+not have this gap — Postgres's own serializable-snapshot-isolation machinery
+independently detects this exact write-skew pattern and aborts one transaction with
+SQLSTATE `40001` — but nothing here uses `SERIALIZABLE` either.) Not fixed, since no
+writer at either isolation level exists against this table today — deferred until one is
+actually proposed, rather than adding isolation-level enforcement or a retry protocol
+against a hypothetical writer.
+
 **Indexes:** the composite PK already indexes `(track_id, depends_on_track_id)` (and
 therefore serves "what does track X depend on" lookups). `idx_track_dependencies_depends_on`
 on `(depends_on_track_id)` additionally serves the reverse direction — "what depends on
@@ -531,7 +547,7 @@ surface (`kt_record_event` vs. `kt_record_decision`).
 **Constraints (added by migration 008, PR #16 escalated findings 1 & 2 full fix):**
 - `decisions_id_track_effect_key` — `UNIQUE (id, track_id, effect)`. Backs both three-column composite FKs below (`tracks.pivot_decision_id`'s and `resolves_decision_id`'s), each of which now verifies same-track **and** the correct `effect`, not just same-track.
 - `decisions_resolves_open_pivot_fk` — `FOREIGN KEY (resolves_decision_id, track_id, resolves_target_effect) REFERENCES decisions (id, track_id, effect)`. Supersedes migration 007's `decisions_resolves_same_track_fk` (dropped by migration 008): a strict superset that also verifies the target's `effect = 'open_pivot'`, closing the remaining half of finding 2 (a `resolve_pivot` row could otherwise resolve a same-track plain `'note'`).
-- `decisions_track_id_required_for_pivots` — `CHECK (effect = 'note' OR track_id IS NOT NULL)`. Closes the actual gap Astra's panel review identified for finding 2 (a `resolve_pivot` row with a `NULL` `track_id` would bypass the composite FK above under its default `MATCH SIMPLE`) — **not** via `MATCH FULL` as originally proposed. `MATCH FULL` was verified, while implementing this migration, to reject every ordinary `'note'` decision that has a non-`NULL` `track_id` (the overwhelming majority of the table): Postgres's actual `MATCH FULL` rule is "no row may mix `NULL` and non-`NULL` key columns," not "skip unless every column is populated," and a plain note's `resolves_decision_id`/`resolves_target_effect` (`NULL`) alongside a normal `track_id` (non-`NULL`) is exactly that mixed shape. This narrower `CHECK` gets the same protection — `resolve_pivot`/`open_pivot` rows must have a `track_id` — without touching the legitimate nullable-`track_id` feature for project-level notes.
+- `trg_decisions_track_id_required_for_pivots` (`BEFORE INSERT` trigger, backed by `reject_pivot_decision_without_track()`) — rejects any new row with `effect <> 'note'` and a `NULL` `track_id`. Closes the actual gap Astra's panel review identified for finding 2 (a `resolve_pivot` row with a `NULL` `track_id` would bypass the composite FK above under its default `MATCH SIMPLE`) — **not** via `MATCH FULL` as originally proposed, and **not** via a plain `CHECK` constraint either (the migration's first draft). `MATCH FULL` was verified, while implementing this migration, to reject every ordinary `'note'` decision that has a non-`NULL` `track_id` (the overwhelming majority of the table): Postgres's actual `MATCH FULL` rule is "no row may mix `NULL` and non-`NULL` key columns," not "skip unless every column is populated," and a plain note's `resolves_decision_id`/`resolves_target_effect` (`NULL`) alongside a normal `track_id` (non-`NULL`) is exactly that mixed shape. A `CHECK` constraint was then verified, in response to Codex's automated review of this same PR, to break the documented track-hard-delete/legal-erasure path: `decisions.track_id ... ON DELETE SET NULL` (see the `decisions` ON DELETE reasoning below) re-validates every `CHECK` on the row it nulls out, so any decision that ever recorded an `open_pivot`/`resolve_pivot` would make its own track undeletable. A `BEFORE INSERT`-only trigger gets the same protection where it's actually needed — `kt_record_decision` is the only path that ever writes a `decisions` row — without re-firing on that FK-driven `UPDATE`.
 
 **Indexes:** `idx_decisions_project_id` on `(project_id)`, `idx_decisions_track_id` on
 `(track_id)`, `decisions_track_id_effect_idx` on `(track_id, effect)` (migration 006,
