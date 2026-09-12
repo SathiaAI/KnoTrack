@@ -242,6 +242,7 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
         title: 'Pivot the approach',
         rationale: 'The original approach no longer fits the constraints we found.',
         what_changed: 'Switched from plan A to plan B.',
+        effect: 'open_pivot',
       }),
     });
     expect(response.statusCode).toBe(200);
@@ -250,8 +251,71 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
     };
     expect(body.result.isError).toBeUndefined();
     expect(body.result.structuredContent?.decision_id).toMatch(/^[0-9a-f-]{36}$/i);
-    const track = await pool.query('SELECT status FROM tracks WHERE id = $1', [track_id]);
+    const track = await pool.query('SELECT status FROM track_readiness WHERE id = $1', [track_id]);
     expect(track.rows[0]?.status).toBe('pivot_pending');
+  });
+
+  // Regression test for a real bug found by Codex's automated review of PR
+  // #16 (thread on src/mcp/tools/record-decision.ts): kt_record_decision's
+  // *registered* inputSchema (recordDecisionRegistrationSchema) is a plain
+  // object with no cross-field refinement, so the SDK's own inputSchema
+  // validation lets an invalid effect/expected_pivot_decision_id
+  // combination straight through to this tool's handler. Before the fix,
+  // the handler's own re-parse against the refined schema (which does
+  // enforce that pairing) threw a raw ZodError *outside* runTool's
+  // try/catch, so the SDK's own generic exception handling produced the
+  // response instead of the documented VALIDATION_ERROR envelope every
+  // other bad-input case in this app uses — unlike the unrelated
+  // "unknown property" case above, which really is an SDK-level rejection
+  // and correctly does not get the envelope. This asserts the envelope
+  // shape specifically, through the real HTTP/JSON-RPC route (not a direct
+  // schema unit test), for both directions of the refinement.
+  it('negative (PR #16 Codex review): resolve_pivot without expected_pivot_decision_id gets the documented VALIDATION_ERROR envelope, not a raw SDK error', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'Record decision validation-envelope check',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: undefined,
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${config.apiTokens[0]}`,
+      },
+      payload: rpcCall('kt_record_decision', {
+        project_id,
+        track_id,
+        title: 'Pivot the approach',
+        rationale: 'The original approach no longer fits the constraints we found.',
+        what_changed: 'Switched from plan A to plan B.',
+        effect: 'resolve_pivot',
+        // expected_pivot_decision_id deliberately omitted — invalid per
+        // the refined schema's superRefine, but the plain registration
+        // schema has no way to reject this before the handler runs.
+      }),
+    });
+    expect(response.statusCode).toBe(200); // TRD §3.1: tool-execution failures are HTTP 200
+    const body = parseSseBody(response.body) as {
+      result: {
+        isError: boolean;
+        content: Array<{ text: string }>;
+      };
+    };
+    expect(body.result.isError).toBe(true);
+    const envelope = JSON.parse(body.result.content[0]?.text ?? '{}') as {
+      error?: { code?: string; http_status_equivalent?: number };
+    };
+    expect(envelope.error?.code).toBe('VALIDATION_ERROR');
+    expect(envelope.error?.http_status_equivalent).toBe(422);
   });
 
   it('positive: kt_update_item_status is wired to its real implementation, not the stub', async () => {

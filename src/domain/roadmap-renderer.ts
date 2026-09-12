@@ -6,7 +6,31 @@ export interface RoadmapTrack {
   id: string;
   title: string;
   status: string;
+  /** T2.16: when `own_done` is true but `effective_done` is false, this
+   * track's own work is finished but its dependency chain has an
+   * unresolved problem two or more hops away — `status` alone doesn't
+   * show this gap (that's the point of it as a drift signal — see the
+   * T2.16 final design doc §3), so the roadmap must surface it
+   * explicitly rather than silently rendering "done" over a broken
+   * foundation. Both fields optional and default to no-gap so existing
+   * callers/fixtures that don't pass them render exactly as before. */
+  own_done?: boolean;
+  effective_done?: boolean;
 }
+
+/** True when a track's own items are finished but its dependency chain
+ * isn't — the specific gap `status` alone can't show (see RoadmapTrack's
+ * doc comment above). Gated on `status === 'done'` per docs/TRD.md's
+ * "(dependency chain incomplete)" section: a track whose status is
+ * `pivot_pending` or `blocked` already names its own problem, so
+ * `own_done`/`effective_done` — which only look at completion, not at an
+ * active pivot or a broken direct dependency — must not also stamp this
+ * annotation on it (PR #16 CodeRabbit review). */
+function hasUnresolvedDependencyGap(track: RoadmapTrack): boolean {
+  return track.status === 'done' && track.own_done === true && track.effective_done === false;
+}
+
+const DEPENDENCY_GAP_NOTE = 'dependency chain incomplete';
 
 export interface RoadmapItem {
   title: string;
@@ -57,7 +81,8 @@ export function renderMarkdownRoadmap(
   const sections = tracks.map((track) => {
     const items = itemsByTrackId.get(track.id) ?? [];
     const itemLines = items.map((item) => `- ${checkbox(item.status)} ${item.title}`);
-    return [`## ${track.title} — ${track.status}`, ...itemLines].join('\n');
+    const gapSuffix = hasUnresolvedDependencyGap(track) ? ` (${DEPENDENCY_GAP_NOTE})` : '';
+    return [`## ${track.title} — ${track.status}${gapSuffix}`, ...itemLines].join('\n');
   });
   return [header, ...sections].join('\n\n') + '\n';
 }
@@ -87,7 +112,8 @@ function mermaidNodeId(trackId: string): string {
 export function renderMermaidRoadmap(tracks: RoadmapTrack[], edges: RoadmapEdge[]): string {
   const lines: string[] = ['graph TD'];
   for (const track of tracks) {
-    const label = sanitizeMermaidLabel(`${track.title} (${track.status})`);
+    const gapNote = hasUnresolvedDependencyGap(track) ? `, ${DEPENDENCY_GAP_NOTE}` : '';
+    const label = sanitizeMermaidLabel(`${track.title} (${track.status}${gapNote})`);
     lines.push(`  ${mermaidNodeId(track.id)}["${label}"]`);
   }
   for (const edge of edges) {

@@ -15,6 +15,11 @@ export interface GetTrackOutput extends Record<string, unknown> {
     track_id: string;
     title: string;
     status: string;
+    /** T2.16: the id of the `decisions` row that opened this track's
+     * currently-active pivot, or null if none is active. This is the
+     * `expected_pivot_decision_id` a subsequent `kt_record_decision`
+     * call needs to resolve that pivot — see docs/TRD.md §3.10. */
+    pivot_decision_id: string | null;
     source_doc_ref: string | null;
     depends_on_track_ids: string[];
     created_at: string;
@@ -72,6 +77,7 @@ export async function getTrackService(
         track_id: track.id,
         title: track.title,
         status: track.status,
+        pivot_decision_id: track.pivot_decision_id,
         source_doc_ref: track.source_doc_ref,
         depends_on_track_ids: dependsOnTrackIds,
         created_at: track.created_at.toISOString(),

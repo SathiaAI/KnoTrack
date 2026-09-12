@@ -262,120 +262,126 @@ so it is built and unit-tested as part of `T2.15`'s hardening pass rather
 than getting its own numbered item.
 
 16. **T2.16 — Track lifecycle: switch `on_track`/`blocked`/`done` from
-    stored to derived (revised 2026-08-29 — supersedes this item's own
-    first draft from the day before; design decided and approved by
-    Paul 2026-08-29, not yet built — see the "Decided by Paul" note
-    below).** Closes a real gap found by tracing `tracks.status`
-    end to end, not merely inferred: the schema and `kt_create_track`'s
-    own blocking check (`allDependenciesDone = ... === 'done'`) both
-    treat `done` as a reachable track status, but per `docs/TRD.md` §3.5
-    exactly two things ever write `tracks.status` — `kt_create_track`
+    stored to derived. Shipped 2026-09-08.** Closes a real gap found by
+    tracing `tracks.status` end to end, not merely inferred: the schema
+    and `kt_create_track`'s own blocking check (`allDependenciesDone =
+    ... === 'done'`) both treated `done` as a reachable track status,
+    but exactly two things ever wrote `tracks.status` — `kt_create_track`
     (initial `on_track`/`blocked`) and `kt_record_decision` (→
-    `pivot_pending`) — and **neither ever sets `done`**. No track can
-    reach `done` in normal operation today, which means no `blocked`
-    track's dependency can ever resolve either.
+    `pivot_pending`) — and **neither ever set `done`**. No track could
+    reach `done` in normal operation, which meant no `blocked` track's
+    dependency could ever resolve either.
 
-    **Revision note:** this item's first draft (written 2026-08-28)
-    proposed patching the write side — have `kt_update_item_status`
-    recompute and cascade-update the stored `tracks.status` column in
-    the same transaction. That works, but it has the same failure shape
-    as the bug it's fixing: it depends on every future code path that
-    touches item or dependency state remembering to run the
-    recomputation, forever. Given this whole exercise started because a
-    hand-maintained status field silently went stale, shipping a second
-    hand-maintained status field (just automated instead of manual) is
-    not the strongest fix available. A harder look at the alternative:
+    **Process:** this item went through two revisions before build (the
+    2026-08-28 first draft proposed patching the write side —
+    `kt_update_item_status` recomputing and cascading a stored
+    `tracks.status` — but that has the same failure shape as the bug it
+    fixes: it depends on every future write path remembering to run the
+    recomputation, forever; the 2026-08-29 revision below moved to a
+    derived-at-read-time model instead), then — per Paul's standing
+    requirement that no T2.16 code be written before an independent
+    architecture review — a full design doc went to a panel of frontier
+    models via OpenRouter for two rounds of genuine critique before any
+    implementation began. Paul signed off on 2026-09-08 with one
+    required correction to both the design doc's published truth table
+    and the reference SQL: the `blocked` check (any direct dependency not
+    locally OK) must be evaluated **before** the `own_done` check, not
+    after — the panel-reviewed draft had a row that let a track's own
+    completed items read as `done` even with a broken direct dependency,
+    which is exactly the class of false claim this whole redesign exists
+    to prevent. The design doc ("T2.16 — Track Lifecycle: Derived Status,
+    Final Design") is the source of truth for the shipped mechanism; this
+    entry summarizes it going forward rather than reproducing it.
 
-    **Revised mechanism — compute `on_track`/`blocked`/`done` at read
-    time instead of storing them:**
-    a. Drop the write side entirely for these three values. Every
-       consumer of `tracks.status` — not just `kt_list_tracks`,
-       `kt_get_track`, and `kt_get_project_status` (`T2.5`/`T2.6`/`T2.7`)
-       but also `kt_create_track` (validates `depends_on` tracks are
-       `done` before allowing an `on_track` child, via
-       `getTrackStatusesForProject`) and `kt_get_next_steps`/
-       `kt_render_roadmap` (via `getTrackSummariesForProject`) —
-       switches to computing each track's effective status via a query
-       (a CTE or equivalent) over its items' `status` and its
-       `track_dependencies` edges (adversarial PR review finding: an
-       earlier draft of this item named only the three read tools,
-       leaving these other three call sites still reading the
-       soon-to-be-stale stored column). The computation itself:
-       `done` iff the track has at least one item, every one of its
-       items is `done`, **and** every `depends_on` track is itself
-       effectively `done` (adversarial PR review finding, two distinct
-       gaps in the original draft: (1) it let a track compute `done`
-       from its own items alone even while a dependency it structurally
-       requires was still open, which the `blocked` case below already
-       treated as disqualifying — the two cases were inconsistent with
-       each other; (2) a freshly created track with zero items
-       satisfied "every item is `done`" vacuously and would read as
-       `done` before any real work existed); `blocked` iff not `done`
-       and (the track has zero items, or at least one item is not
-       `done`, or at least one `depends_on` track is not effectively
-       `done`); `on_track` otherwise. There is no cascade to write,
-       because nothing is ever wrong-until-updated — every read is
-       correct by construction, the same way `kt_get_next_steps` is
-       already a pure read over live data rather than a cached table.
-    b. `pivot_pending` is the one genuinely stateful fact here — it's an
-       explicit human/agent decision, not a function of item state — so
-       it stays a **stored** override on `tracks` (a `pivot_pending
-       boolean` or equivalent), checked first: a track with the flag set
-       shows as `pivot_pending` regardless of what (a) would otherwise
-       compute, and `kt_record_decision` remains its only writer.
-    c. This also **removes open question 2 from the first draft**
-       entirely rather than just deferring it: "does a track un-complete
-       if an item regresses" was only a hard question under the stored
-       model, where reverting requires deliberately re-triggering a
-       cascade. Under a derived model there's nothing to revert — the
-       next read simply reflects current reality, the same way it always
-       does. One fewer open decision, not because it was punted, but
-       because the better architecture makes the question not apply.
-    d. Trade-off, stated plainly rather than assumed away: `docs/TRD.md`
-       §3.5's original reason for making `tracks.status` a stored column
-       was so `kt_list_tracks`'s status filter could be "a direct `WHERE
-       tracks.status = ...` clause... no post-processing step needed."
-       A derived column can't use a plain index lookup the same way —
-       it costs a join/aggregate per read instead. At the PRD's own
-       stated v1 ceiling (200 tracks, 100 items/track per project, §6.3)
-       this is very unlikely to be measurable, but it hasn't been
-       benchmarked, and "very unlikely" is a claim to verify against the
-       `<200ms` simple-read budget (TRD §6.1) before treating it as
-       settled, not to assume.
+    **Shipped mechanism — status and a new `effective_done` fact are both
+    computed at read time by a new `track_readiness` view
+    (`migrations/006_derived_track_status.sql`), never stored:**
+    a. `own_done(track)` = the track has at least one item and every item
+       is done-equivalent. An **empty track (zero items) is never
+       `done`** — this was an open risk in the 2026-08-29 draft (a
+       freshly created track vacuously satisfying "every item is done")
+       and is now an explicit rule with its own regression test.
+    b. `status` is computed in a fixed, load-bearing order that a track
+       never deviates from, and never reads another track's `status` —
+       only local facts of the track itself and its **direct**
+       dependencies' local facts: (1) the track has an active pivot →
+       `pivot_pending`; (2) any direct dependency is not locally OK (that
+       dependency's own `own_done` false, or it has an active pivot) →
+       `blocked`, checked strictly before own-completion so a track can
+       never paper over a broken dependency with its own finished work;
+       (3) else `own_done` → `done`; (4) else → `on_track`.
+    c. `effective_done(track)` = `own_done` AND no active pivot AND every
+       **transitively** reachable dependency is itself `own_done` with no
+       active pivot. This is deliberately a separate fact from `status`:
+       because `status` only checks one hop, a track can read
+       `status: "done"` while a dependency two-plus hops away is broken —
+       `own_done: true, effective_done: false` is a real, surfaced gap
+       (a "two-hop miss"), not a bug. `kt_get_next_steps` filters on
+       `effective_done` (not `status`) for exactly this reason, and
+       `kt_render_roadmap` annotates the gap explicitly
+       (`" (dependency chain incomplete)"`) rather than silently
+       reporting `done` on unsafe ground — silent `done` on a broken
+       foundation would be a false claim.
+    d. Pivots are a pointer, not a boolean: `tracks.pivot_decision_id`
+       references the `decisions` row that opened the active pivot, or
+       `NULL`. `kt_record_decision` gained an `effect` parameter
+       (`"note"` | `"open_pivot"` | `"resolve_pivot"`, default `"note"`)
+       — a plain note now has **no** side effect on pivot state at all
+       (a change from the original always-sets-`pivot_pending` behavior);
+       opening and resolving a pivot are both compare-and-set
+       transactions guarded against races (`resolve_pivot` requires an
+       `expected_pivot_decision_id` and fails with a clear conflict,
+       rather than a silent no-op, if the track has no active pivot or a
+       different one than expected).
+    e. `kt_create_track`'s dependency-completeness check is a **warning,
+       not a hard gate** (settled at sign-off): an unfinished listed
+       dependency is surfaced via an optional `warnings: string[]` field,
+       but creation still succeeds — blocking it would make it impossible
+       to pre-declare a track's place in a plan ahead of its
+       prerequisites finishing.
+    f. `tracks.pivot_decision_id`'s FK is `ON DELETE NO ACTION` (settled
+       at sign-off, over an initial 2-1 panel split) — checked at
+       end-of-statement, so a project-level cascade delete still succeeds
+       in one statement, while directly deleting a decision anchoring a
+       live pivot is rejected rather than silently clearing it.
+    g. A new `BEFORE INSERT OR UPDATE` trigger on `track_dependencies`
+       (recursive-CTE reachability check) rejects a multi-hop dependency
+       cycle at the database level — layered on top of, not replacing,
+       the existing application-level cycle check, closing a gap a plain
+       `CHECK` constraint can't see (it only sees the one row being
+       inserted).
+    h. **Scope constraint for this build wave, stated explicitly in the
+       design doc's §11 and honored by what shipped:** derived status
+       only — no free-form status write, no claim/dispatch mechanism.
+       Trade-off carried forward rather than resolved: a derived `status`
+       can't use a plain indexed `WHERE` the way the old stored column
+       could for `kt_list_tracks`'s status filter — the `track_readiness`
+       view costs a join/aggregate per read instead. Not yet benchmarked
+       against the PRD's stated v1 ceiling; still believed comfortably
+       inside the `<200ms` simple-read budget (TRD §6.1) at that scale,
+       but that belief hasn't been verified with a real benchmark.
 
-    **Decided by Paul (2026-08-29):** a `pivot_pending` track never
-    auto-resolves — it always requires an explicit action, the same way
-    entering the pivot required one. That means this item's scope grows
-    by one small, symmetric piece: `kt_record_decision` gains an
-    optional `resolves_pivot: true` input, which — in the same
-    transaction as recording the (already-required) rationale/
-    what-changed text — clears the pivot override instead of setting it.
-    No new tool; this stays inside the existing 14, matching how
-    `kt_record_decision` already both opens a pivot and now closes one,
-    each time leaving an audit-trail entry explaining why. Once cleared,
-    the track's status is whatever (a)–(c) above compute from its actual
-    item/dependency state, same as any other track.
-
-    Acceptance: a benchmark confirming the derived-status query stays
-    inside the `<200ms` simple-read budget at the PRD's stated v1 scale;
-    unit tests for a track computing `done` the instant its last item
-    does, a track with zero items never reading as `done` regardless of
-    its dependencies, a track whose own items are all `done` still
-    reading as `blocked` while a `depends_on` track is not effectively
-    `done`, a chain of dependent tracks computing `on_track` in the same
-    read with no separate propagation step, a track regressing correctly
-    with no stale cached value anywhere, a `pivot_pending` track
-    confirmed staying `pivot_pending` through item completion until
-    `kt_record_decision(resolves_pivot: true)` is called, and that call
-    both clearing the override and appearing in the Decision audit log;
-    `docs/TRD.md` §3.5 and §3.10 rewritten to describe the derived model
-    and `kt_record_decision`'s new input. depends_on: `T2.5`/`T2.6`/
-    `T2.7` (the three read tools whose queries change), `T2.3`
-    (`kt_create_track`'s dependency-completeness check reads the same
-    derived status), `T2.12` (`kt_render_roadmap`, and `kt_get_next_steps`
-    alongside it per its `T2.15` note above, both read track status via
-    `getTrackSummariesForProject`), `T2.10` (`kt_record_decision`,
-    already shipped, gains the new field).
+    Acceptance (all shipped, `219/219` tests green including the new
+    ones): unit/integration tests for `status: "done"` being reachable at
+    all (the core regression for the original defect), an empty track
+    never reading `done`, an unfinished `depends_on` producing a warning
+    without blocking creation, a two-hop dependency drift correctly
+    excluded from `kt_get_next_steps` even though the intervening track's
+    own `status` reads `on_track`, `kt_render_roadmap` annotating an
+    `own_done`-but-not-`effective_done` track in both markdown and
+    mermaid output, `open_pivot`/`resolve_pivot` happy paths and their
+    conflict cases (no active pivot; stale expected id), a plain `note`
+    confirmed to leave pivot state untouched, and both the trigger-level
+    and legacy-data application-level cycle rejections; `docs/TRD.md`
+    (§3.5, §3.6, §3.8, §3.10, §3.13, Appendix C) and
+    `docs/DATABASE_SCHEMA.md` (the `tracks`/`decisions` table entries, the
+    new `track_readiness` view section, the ER diagram) rewritten to
+    describe the shipped model. depends_on: `T2.5`/`T2.6`/`T2.7` (the
+    three read tools whose queries changed), `T2.3` (`kt_create_track`'s
+    dependency-completeness check reads the same derived facts), `T2.12`
+    (`kt_render_roadmap`, and `kt_get_next_steps` alongside it per its
+    `T2.15` note above), `T2.10` (`kt_record_decision`, already shipped,
+    gains the `effect`/`expected_pivot_decision_id` fields).
 
 **Status reconciliation (added retroactively — this Track's items above
 describe the plan, not yet what shipped at the time this note was
@@ -1044,14 +1050,16 @@ fixtures).
    Item under `T1`–`T7` is set to `done` via `kt_update_item_status`
    (there is no track-status tool by design — see the tool table above —
    and per `T2.16`'s derived-status model there is nothing else to
-   write: `on_track`/`blocked`/`done` are computed at read time from
-   item status, so backfilling items to `done` is sufficient for their
-   tracks to read as `done` too, with no separate track-status seeding
-   step); any real pivot that occurred during T1–T7 is additionally
-   recorded via `kt_record_decision` so the audit trail isn't silently
-   backdated (one that has since been resolved is recorded via
-   `kt_record_decision(resolves_pivot: true)`, not left
-   `pivot_pending`). depends_on: `T8.2`, `T2.16`.
+   write: `on_track`/`blocked`/`done`/`pivot_pending` are all computed at
+   read time by the `track_readiness` view from item status and each
+   track's pivot pointer, so backfilling items to `done` is sufficient
+   for their tracks to read as `done` too, with no separate
+   track-status seeding step); any real pivot that occurred during
+   T1–T7 is additionally recorded via `kt_record_decision(effect:
+   "open_pivot")` so the audit trail isn't silently backdated (one that
+   has since been resolved gets a matching `kt_record_decision(effect:
+   "resolve_pivot", expected_pivot_decision_id: ...)` call, not left
+   with an active pivot). depends_on: `T8.2`, `T2.16`.
 4. **T8.4 — Session-recording cutover.** Acceptance: `CONTRIBUTING.md`
    states that all further KnoTrack development sessions are recorded via
    `kt_record_session_summary` instead of ad hoc notes, and the first
@@ -1120,7 +1128,9 @@ items_completed_at_cutover = [
 ]
 historical_pivots = [
     # {"track": "<roadmap Track id>", "title": ..., "rationale": ...,
-    #  "what_changed": ..., "already_resolved": <bool>}
+    #  "what_changed": ..., "already_resolved": <bool>,
+    #  # only present when already_resolved is true:
+    #  "resolution_rationale": ..., "resolution_what_changed": ...}
     # ...
 ]
 
@@ -1152,18 +1162,32 @@ for entry in items_completed_at_cutover:
     )
     backfilled_by_track[entry["track"]].append(item_id[entry["item"]])
 
-for pivot in historical_pivots:                       # any real pivot that
-    kt_record_decision(                               # occurred during T1-T7.
-        project_id     = project.id,                  # kt_record_decision's
-        track_id       = track_id[pivot["track"]],    # actual (already-shipped,
-        title          = pivot["title"],              # T2.10) contract requires
-        rationale      = pivot["rationale"],          # all four of project_id/
-        what_changed   = pivot["what_changed"],       # track_id/title/rationale/
-        resolves_pivot = pivot["already_resolved"],   # what_changed — there's no
-    )                                                  # free-text-only form
-    # `resolves_pivot` is T2.16's addition to this call — safe to rely on
-    # here because T8.3 depends_on T2.16 (both land, in order, before T8
-    # ever runs).
+for pivot in historical_pivots:                        # any real pivot that
+    opened = kt_record_decision(                       # occurred during T1-T7.
+        project_id     = project.id,                   # kt_record_decision's
+        track_id       = track_id[pivot["track"]],     # actual (T2.16-shipped)
+        title          = pivot["title"],                # contract: effect
+        rationale      = pivot["rationale"],            # defaults to "note", so
+        what_changed   = pivot["what_changed"],         # opening a pivot must
+        effect         = "open_pivot",                  # be explicit.
+    )
+    if pivot["already_resolved"]:
+        kt_record_decision(
+            project_id                 = project.id,
+            track_id                   = track_id[pivot["track"]],
+            title                      = f"{pivot['title']} (resolved)",
+            rationale                  = pivot["resolution_rationale"],
+            what_changed               = pivot["resolution_what_changed"],
+            effect                     = "resolve_pivot",
+            expected_pivot_decision_id = opened["decision_id"],
+        )
+    # `effect`/`expected_pivot_decision_id` are T2.16's additions to this
+    # call — safe to rely on here because T8.3 depends_on T2.16 (both land,
+    # in order, before T8 ever runs). An already-resolved historical pivot
+    # takes two calls (open then resolve) rather than one, since T2.16's
+    # compare-and-set design has no single-call "open pre-resolved" form —
+    # that's a deliberate consequence of resolve always requiring the
+    # opening decision's real id (see docs/TRD.md §3.10).
 
 # T8.3's acceptance criterion is the loops above actually running — these
 # summaries are a record of that having happened, not a substitute for it
@@ -1312,16 +1336,22 @@ build.
 **Deferred from PR #1's CodeRabbit review round (2026-08-23/24) — architecture/
 scope decisions, not bugs, per the `clear-decisions` walkthrough:**
 - **Superseded 2026-08-28, now scheduled as `T2.16` — a path to unblock
-  a `blocked` track.** Originally logged here as `T9.x`/unscheduled with
-  "deferred until a real caller actually hits this." Re-investigated
-  because the categorization itself was checked rather than trusted: the
-  real gap is one level deeper than this bullet said — no track can ever
-  reach `done` at all in normal operation (see `T2.16` above for the
-  full trace through `docs/TRD.md` §3.5 and `kt_create_track`'s own
-  logic), which is *why* nothing ever unblocks a dependent. Design
-  revised again 2026-08-29 and decided by Paul the same day (derived
-  status, not a stored+cascade patch, plus the `resolves_pivot`
-  mechanism — see `T2.16`'s revision note); not yet built.
+  a `blocked` track. Shipped 2026-09-08.** Originally logged here as
+  `T9.x`/unscheduled with "deferred until a real caller actually hits
+  this." Re-investigated because the categorization itself was checked
+  rather than trusted: the real gap was one level deeper than this
+  bullet said — no track could ever reach `done` at all in normal
+  operation (see `T2.16` above for the full trace through the old
+  `docs/TRD.md` §3.5 and `kt_create_track`'s own logic), which is *why*
+  nothing ever unblocked a dependent. Design revised again 2026-08-29,
+  then sent to an independent multi-model panel for architecture review
+  (two rounds) and signed off by Paul on 2026-09-08 with one correction
+  (the truth table's `blocked` check must run before, not after, the
+  `done` check, so a track's own completed items can never paper over a
+  broken direct dependency): derived `status`/`effective_done` computed
+  by the new `track_readiness` view, not a stored+cascade patch, plus the
+  `effect: "open_pivot"`/`"resolve_pivot"` mechanism on `kt_record_decision`
+  — see `T2.16`'s entry above for the final shipped design.
 - **Still unscheduled, but with a stated trigger now (2026-08-28) —
   `@modelcontextprotocol/sdk` v1 → v2 migration.** Needed for
   `server/discover` and the 2026-07-28 protocol revision's stateless

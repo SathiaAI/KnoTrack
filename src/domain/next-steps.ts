@@ -17,6 +17,16 @@ export interface NextStepsItemInput {
 export interface NextStepsTrackInput {
   title: string;
   status: string;
+  /** T2.16: whether every one of this track's *direct* dependencies is
+   * `effective_done` (the fully-transitive fact, not just locally OK) —
+   * replaces the old "drop items whose track has stored status
+   * 'blocked'" filter, which only ever caught a direct-dependency
+   * problem and missed a two-or-more-hop one. A track with no
+   * dependencies is vacuously true here. See the T2.16 final design doc
+   * §4: "kt_get_next_steps... effective_done on every candidate's
+   * dependency set — not status. This is the tool whose entire job is
+   * 'is it safe to work on this'." */
+  dependenciesEffectivelyDone: boolean;
 }
 
 export interface RecommendedItem {
@@ -44,12 +54,15 @@ function trackStatusPriority(status: string): number {
 }
 
 /**
- * TRD §3.8's full algorithm, steps 1-6:
+ * TRD §3.8's full algorithm, steps 1-6 (step 3 revised by T2.16):
  *   1. `pendingItems` is assumed pre-filtered to status = 'pending' by the
  *      caller's query.
  *   2. Keep only items where every depends_on_item_id is `done` (or the
  *      item has no dependencies) — via `itemStatusById`.
- *   3. Drop items whose track has stored status 'blocked'.
+ *   3. Drop items whose track's direct dependencies are not all
+ *      `effective_done` (T2.16 — see NextStepsTrackInput's doc comment;
+ *      this replaces the old "track has stored status 'blocked'" check,
+ *      which only caught a *direct* dependency problem).
  *   4. Sort by track status priority, then sequence_position ascending,
  *      then created_at ascending.
  *   5. Take the top `limit`.
@@ -63,7 +76,7 @@ export function rankNextSteps(
 ): RecommendedItem[] {
   const survivors = pendingItems.filter((item) => {
     const track = tracksById.get(item.track_id);
-    if (!track || track.status === 'blocked') return false;
+    if (!track || !track.dependenciesEffectivelyDone) return false;
     return item.dependsOnItemIds.every((depId) => itemStatusById.get(depId) === 'done');
   });
 
