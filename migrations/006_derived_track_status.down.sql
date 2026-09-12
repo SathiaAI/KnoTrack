@@ -60,11 +60,23 @@ DROP FUNCTION IF EXISTS reject_track_dependency_cycle();
 -- rather than guess at a safe default; an operator who genuinely wants to
 -- discard this history can back it up first, then drop the columns
 -- directly.
+-- CodeRabbit re-review (PR #16): the first EXISTS below (unchanged from the
+-- original guard) only catches historical audit rows (any decision whose
+-- effect isn't 'note'). It does not by itself prove no track currently has
+-- a *live* pivot: migrations 001-007's tracks_pivot_decision_fk is a
+-- same-track-only check (no effect verification -- that's migration 008's
+-- job, not merged yet), so a non-application writer could in principle
+-- leave tracks.pivot_decision_id pointing at a same-track 'note' row,
+-- which the first EXISTS alone would not catch. The second EXISTS closes
+-- that gap directly: it fires whenever any track has an active pivot at
+-- all, regardless of what the pointer references, since dropping
+-- tracks.pivot_decision_id below would silently sever that link either way.
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM decisions WHERE effect <> 'note') THEN
+  IF EXISTS (SELECT 1 FROM decisions WHERE effect <> 'note')
+     OR EXISTS (SELECT 1 FROM tracks WHERE pivot_decision_id IS NOT NULL) THEN
     RAISE EXCEPTION
-      'Refusing to drop decisions.effect/resolves_decision_id: at least one decision has effect <> ''note'' (an open_pivot/resolve_pivot record). Back up this audit history first if you really want to roll this back.';
+      'Refusing to drop decisions.effect/resolves_decision_id/tracks.pivot_decision_id: at least one decision has effect <> ''note'' (an open_pivot/resolve_pivot record), or at least one track has an active pivot. Back up this audit history first if you really want to roll this back.';
   END IF;
 END $$;
 
