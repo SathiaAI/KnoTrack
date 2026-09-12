@@ -1,5 +1,6 @@
 // kt_record_decision — docs/TRD.md §3.10.
 import type { Pool, PoolClient } from 'pg';
+import { ZodError } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
 import {
@@ -11,7 +12,7 @@ import { findActiveProjectById } from '../../db/queries/projects.js';
 import { findTrackById, openTrackPivot, resolveTrackPivot } from '../../db/queries/tracks.js';
 import { insertDecision } from '../../db/queries/decisions.js';
 import { withTransaction } from '../../db/tx.js';
-import { conflict, notFound } from '../errors.js';
+import { conflict, notFound, validationError } from '../errors.js';
 import { runTool } from '../tool-helpers.js';
 
 export interface RecordDecisionOutput extends Record<string, unknown> {
@@ -182,11 +183,37 @@ export function registerRecordDecisionTool(
         "the default `effect: 'note'` just logs the decision with no lifecycle side effect.",
       inputSchema: recordDecisionRegistrationSchema,
     },
-    async (rawArgs: unknown) => {
-      const input = recordDecisionInputSchema.parse(rawArgs);
-      return runTool(logger, 'kt_record_decision', () =>
-        recordDecisionService(pool, config, input),
-      );
-    },
+    async (rawArgs: unknown) =>
+      runTool(logger, 'kt_record_decision', () => {
+        // `recordDecisionRegistrationSchema` above (the schema actually
+        // advertised via tools/list and enforced by the SDK before this
+        // handler runs — see this file's own PR #16 review-thread reply)
+        // is a plain, unrefined object: it has no cross-field check
+        // between `effect` and `expected_pivot_decision_id`. That check
+        // lives only in `recordDecisionInputSchema`'s superRefine, parsed
+        // here. Unlike every other tool in this codebase (whose
+        // registration and parsing schema are the same object, so the SDK
+        // itself already rejects anything `.parse()` could reject),
+        // record-decision's split means a bad `effect`/
+        // `expected_pivot_decision_id` combination reaches this line
+        // still unrejected — so this `.parse()` must run inside runTool's
+        // try/catch and translate a `ZodError` into the same
+        // VALIDATION_ERROR envelope every other input error uses, instead
+        // of throwing past runTool and surfacing as an SDK-formatted
+        // internal error (PR #16 Codex review; verified via the resulting
+        // response shape, not just inferred from a code read).
+        let input: RecordDecisionInput;
+        try {
+          input = recordDecisionInputSchema.parse(rawArgs);
+        } catch (err) {
+          if (err instanceof ZodError) {
+            throw validationError('invalid kt_record_decision input', {
+              issues: err.issues,
+            });
+          }
+          throw err;
+        }
+        return recordDecisionService(pool, config, input);
+      }),
   );
 }

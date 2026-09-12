@@ -49,6 +49,25 @@ DROP FUNCTION IF EXISTS reject_track_dependency_cycle();
 -- Reverse of step 4 / step 2: pivot-pointer schema
 -- ============================================================
 
+-- Same guard as 005_tracks_sync_timestamps.down.sql, for the same reason
+-- (PR #16 Codex review, found on this exact file): decisions.effect and
+-- decisions.resolves_decision_id are the only record of which decisions
+-- opened or resolved a pivot, and which opening decision each resolution
+-- closed. Once any real open_pivot/resolve_pivot decision has been
+-- recorded, dropping these columns unconditionally destroys that
+-- append-only audit history with no undo — silent, permanent data loss
+-- disproportionate to what "roll back a migration" should do. Refuse
+-- rather than guess at a safe default; an operator who genuinely wants to
+-- discard this history can back it up first, then drop the columns
+-- directly.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM decisions WHERE effect <> 'note') THEN
+    RAISE EXCEPTION
+      'Refusing to drop decisions.effect/resolves_decision_id: at least one decision has effect <> ''note'' (an open_pivot/resolve_pivot record). Back up this audit history first if you really want to roll this back.';
+  END IF;
+END $$;
+
 DROP INDEX IF EXISTS tracks_pivot_decision_id_idx;
 ALTER TABLE decisions DROP CONSTRAINT IF EXISTS decisions_what_changed_required_for_pivots;
 ALTER TABLE decisions DROP CONSTRAINT IF EXISTS decisions_rationale_not_null;
