@@ -327,7 +327,7 @@ write path ever set `status = 'done'`, so a track could never complete and a dep
 could never unblock (`docs/TRD.md` §3.5).
 
 **Indexes:** `idx_tracks_project_id` on `(project_id)`;
-`idx_tracks_pivot_decision_id` on `(pivot_decision_id)` (added by migration 006,
+`tracks_pivot_decision_id_idx` on `(pivot_decision_id)` (added by migration 006,
 supporting the view's join and the compare-and-set updates in `kt_record_decision`).
 
 **ON DELETE reasoning:** `CASCADE` from `projects` — a track cannot outlive its

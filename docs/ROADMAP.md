@@ -19,10 +19,15 @@ rather than implied by ordering.
 ## Legend
 
 - **Track ID**: `T1`–`T8`. **Item ID**: `T<n>.<m>`, e.g. `T3.4`.
-- **Track status** uses the real `tracks.status` enum from the schema
-  (`docs/... DB schema`, `migrations/001_init.sql`): `on_track`,
-  `pivot_pending`, `blocked`, `done`. All Tracks start `blocked` except
-  the one Track nothing else is waiting on.
+- **Track status** values follow the same four-value set the schema uses:
+  `on_track`, `pivot_pending`, `blocked`, `done`. Originally (`migrations/
+  001_init.sql`) this was a literal stored `tracks.status` column; as of
+  `T2.16` (2026-09-08, see that item below) the column is gone and status
+  is computed at read time by the `track_readiness` view
+  (`migrations/006_derived_track_status.sql`) — this doc's own
+  hand-maintained `Status:` lines below just keep using the same four
+  values by convention, not a column write. All Tracks start `blocked`
+  except the one Track nothing else is waiting on.
 - **Item status** uses the real `items.status` enum: `pending`,
   `in_progress`, `done`, `blocked`. Every Item below starts `pending`
   unless noted; T1's items are already substantially satisfied in reality
@@ -81,7 +86,7 @@ if you're diffing against history, everything below is the fix.)
 | 6 | `kt_create_track` | Create a Track under a project |
 | 7 | `kt_create_item` | Create an Item under a Track |
 | 8 | `kt_record_session_summary` | Append a session's summary + files/items touched; runs the drift check inline |
-| 9 | `kt_record_decision` | Log an explicit pivot/decision against a track; sets that track's stored status to `pivot_pending` |
+| 9 | `kt_record_decision` | Log a decision against a track; `effect: open_pivot`/`resolve_pivot` set/clear that track's pivot pointer (T2.16), which makes derived status read `pivot_pending`/not — the default `effect: note` has no status side effect |
 | 10 | `kt_update_item_status` | Change an Item's status |
 | 11 | `kt_check_drift` | Return open drift flags for a project |
 | 12 | `kt_render_roadmap` | Generate a roadmap document from current DB state (pure read, never a write target) |
@@ -91,9 +96,10 @@ if you're diffing against history, everything below is the fix.)
 Issuing bearer tokens (`api_tokens`) is an operator action done via an
 admin CLI/script at deploy time, not one of the 14 MCP tools. There is no
 `kt_update_track`, `kt_list_items`, `kt_get_session_history`, or
-`kt_archive_project` tool: track status is a stored column that only ever
-changes as a side effect of `kt_create_track` (initial value) and
-`kt_record_decision` (→ `pivot_pending`) — never set directly; an item's
+`kt_archive_project` tool: track status is derived, not stored (`T2.16`) —
+computed at read time from `kt_create_track`'s dependency/item state and
+from `kt_record_decision`'s `effect: open_pivot`/`resolve_pivot` pivot-
+pointer writes; no tool sets it directly; an item's
 containing track already comes back from `kt_get_track`, so no separate
 listing tool is needed; recent events are already part of
 `kt_get_project_status`'s response; and project archival/deletion is
