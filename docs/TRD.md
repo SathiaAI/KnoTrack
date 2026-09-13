@@ -948,7 +948,7 @@ similar name — it's never raised anywhere in this build.
 
 | `flag_type` | `severity` | Trigger condition |
 |---|---|---|
-| `STALE_TRACK` | `warning` | Track's stored status is `on_track` **and** no `session_summary` event referencing that `track_id` has `created_at` within the last `KNOTRACK_STALE_TRACK_DAYS` days (default 14). If the track has zero events ever, measured from the track's `created_at` instead. |
+| `STALE_TRACK` | `warning` | Track's derived status (`track_readiness.status`, §3.5 — not a stored column) is `on_track` **and** no `session_summary` event referencing that `track_id` has `created_at` within the last `KNOTRACK_STALE_TRACK_DAYS` days (default 14). If the track has zero events ever, measured from the track's `created_at` instead. |
 | `DEPENDENCY_GAP` | `critical` | An item has `status = 'done'` while at least one of its `depends_on_item_id` items does **not** have `status = 'done'`. (Should be prevented at write time by `kt_update_item_status`'s 409 check — this flag exists as a defensive integrity check, e.g. for data that predates that rule or was touched directly in the DB.) |
 | `SEQUENCE_SKIP` | `info` | An item with `sequence_position = k` and `status = 'done'` exists while another item in the **same track** with `sequence_position < k` has `status` of `pending` or `blocked` — i.e. work finished out of its intended order. Informational, not necessarily wrong. |
 | `UNDOCUMENTED_DECISION` | `warning` | A `decisions` row exists for a track, and **no** `events` row for that same `track_id` has `created_at` later than the decision's `created_at` — i.e. a decision was logged but no subsequent session summary shows it was acted on. |
