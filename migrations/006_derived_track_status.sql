@@ -61,13 +61,32 @@ CREATE INDEX decisions_track_id_effect_idx ON decisions (track_id, effect);
 -- pivot_pending under the new pointer model, with an honest placeholder
 -- rationale rather than inventing one. This subsumes the manual audit
 -- query in this file's header comment for any track it actually finds.
+--
+-- Two follow-up fixes here (PR #16 Codex re-review), both about this
+-- backfill leaving a "now()" fingerprint on data that isn't actually new:
+-- 1. The synthesized decision's created_at is backdated to the track's
+--    own pre-migration updated_at, not left to default to migration-run
+--    time. kt_get_project_status's recent-events/timeline view orders
+--    decisions by created_at DESC (capped at 20) — a decision whose own
+--    title says "this pivot pre-dates decision-linked pivots" should not
+--    be able to outrank genuinely recent activity just because migration
+--    006 happened to run today, and on a project with enough legacy
+--    pivots it could displace all of it.
+-- 2. The tracks UPDATE below is wrapped in a trg_tracks_set_updated_at
+--    disable/enable for the same reason: that trigger (migrations/
+--    001_init.sql) unconditionally sets updated_at = now() on any UPDATE,
+--    so without this it would bump every legacy pivot_pending track's
+--    updated_at to migration-run time even though nothing about the
+--    track's real state changed.
+ALTER TABLE tracks DISABLE TRIGGER trg_tracks_set_updated_at;
+
 WITH pivoted AS (
-  SELECT id, project_id
+  SELECT id, project_id, updated_at
   FROM tracks
   WHERE status = 'pivot_pending'
 ),
 inserted AS (
-  INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect)
+  INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, created_at)
   SELECT
     project_id,
     id,
@@ -76,7 +95,8 @@ inserted AS (
       'original rationale was not recorded under the old stored-status model.',
     'Backfilled by migrations/006_derived_track_status.sql during the ' ||
       'switch to derived track status.',
-    'open_pivot'
+    'open_pivot',
+    updated_at
   FROM pivoted
   RETURNING id, track_id
 )
@@ -85,12 +105,27 @@ SET pivot_decision_id = inserted.id
 FROM inserted
 WHERE tracks.id = inserted.track_id;
 
+ALTER TABLE tracks ENABLE TRIGGER trg_tracks_set_updated_at;
+
 -- Backfill NULL rationale/what_changed on any pre-existing decision rows
 -- before validating the NOT NULL check added in step 4 — closes a gap
 -- that, per docs/DATABASE_SCHEMA.md, existed only at the tool layer
 -- (kt_record_decision always required both as non-empty strings) and
 -- never at the DB level, so any row inserted by something other than
 -- that tool could have left one NULL.
+--
+-- Deployment note (PR #16 Codex re-review): this UPDATE targets
+-- `decisions`, one of the two tables docs/DATABASE_SCHEMA.md's optional
+-- "REVOKE UPDATE ON events, decisions FROM <app_role>" hardening step
+-- locks down (this file's own closing comment documents that step). An
+-- installer who applied that hardening to the same role scripts/
+-- migrate.ts connects as must temporarily GRANT UPDATE ON decisions TO
+-- <app_role> before running this migration (and may REVOKE it again
+-- immediately after) — otherwise this statement fails with a permission
+-- error whenever there is an existing decisions row with a NULL
+-- rationale to backfill. Not automated here: the role name is
+-- deployment-specific, same reasoning as why the REVOKE itself is left
+-- commented out rather than executed unconditionally.
 UPDATE decisions SET rationale = '(rationale not recorded — backfilled by migrations/006_derived_track_status.sql)'
 WHERE rationale IS NULL;
 
@@ -164,6 +199,42 @@ CREATE INDEX tracks_pivot_decision_id_idx
 -- only see the one row being inserted). This trigger closes that gap at
 -- the schema level, independent of which application code path performs
 -- the insert/update.
+--
+-- Validate the existing graph first (PR #16 Codex re-review): Postgres
+-- does not run a newly created trigger against rows that already exist,
+-- so installing this trigger on a database whose track_dependencies
+-- already contains a cycle — necessarily written directly, since no v1
+-- tool path can create one (see the note above) — would silently commit
+-- an invalid graph. track_readiness's own recursive CTEs already
+-- self-terminate against a cycle (UNION, not UNION ALL — see the view
+-- below), so this isn't a live query-hang risk, but it would still let
+-- that pre-existing cycle poison every future kt_create_track/
+-- kt_create_item call once this trigger is in place, since the
+-- application-level cycle check treats the whole graph, including the
+-- bad edges, as ground truth. Abort rather than install the trigger on
+-- top of data it can't vouch for.
+DO $$
+DECLARE
+  cycle_exists boolean;
+BEGIN
+  WITH RECURSIVE walk(start_node, node, path, is_cycle) AS (
+    SELECT track_id, depends_on_track_id, ARRAY[track_id], false
+    FROM track_dependencies
+    UNION ALL
+    SELECT w.start_node, td.depends_on_track_id, w.path || td.depends_on_track_id,
+           td.depends_on_track_id = ANY (w.path)
+    FROM track_dependencies td
+    JOIN walk w ON td.track_id = w.node
+    WHERE NOT w.is_cycle
+  )
+  SELECT EXISTS (SELECT 1 FROM walk WHERE is_cycle) INTO cycle_exists;
+
+  IF cycle_exists THEN
+    RAISE EXCEPTION
+      'migrations/006: track_dependencies already contains a dependency cycle. This could only have been written directly (no v1 tool path can create one) and must be audited and repaired before trg_track_dependencies_no_cycle is installed below.';
+  END IF;
+END $$;
+
 CREATE FUNCTION reject_track_dependency_cycle() RETURNS trigger AS $$
 DECLARE
   would_cycle boolean;
