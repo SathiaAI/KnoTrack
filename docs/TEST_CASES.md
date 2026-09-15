@@ -284,7 +284,12 @@ the track.
 
 ## 10. `kt_record_decision`
 
-`kt_record_decision(project_id, track_id, title, rationale, what_changed) -> {decision_id}`
+`kt_record_decision(project_id, track_id, title, rationale, what_changed, effect?: note|open_pivot|resolve_pivot = note, expected_pivot_decision_id?) -> {decision_id}`
+
+(T2.16 — src/schemas/tools.ts `recordDecisionShape`: `effect` defaults to `note`
+when omitted, so every case below that predates `effect` still applies
+unchanged to the default `note` path. `expected_pivot_decision_id` is
+required when `effect="resolve_pivot"` and rejected for any other `effect`.)
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
@@ -300,6 +305,15 @@ the track.
 | DEC-10 | kt_record_decision | Negative | Two projects, two tokens | Wrong-tenant token/project pairing | 404 |
 | DEC-11 | kt_record_decision | Negative | Two projects, two tokens | Token for P2, `project_id=P2`, `track_id` belongs to P1 | 404 |
 | DEC-12 | kt_record_decision | Positive | Decision recorded on track T | Subsequent `kt_get_project_status` / `kt_get_track` call | The decision surfaces appropriately in project history/events (verify it is durably persisted, not just acknowledged) |
+| DEC-13 | kt_record_decision | Positive | Track exists, `effect` omitted | All fields populated, no `effect` field sent | 200/201; decision recorded with `effect="note"` (schema default); `tracks.pivot_decision_id` unchanged |
+| DEC-14 | kt_record_decision | Positive | Track has no active pivot | `effect="open_pivot"` | 200/201; `{decision_id}` returned; `tracks.pivot_decision_id` now points at this decision |
+| DEC-15 | kt_record_decision | Negative (conflict) | Track already has an active pivot (from DEC-14) | `effect="open_pivot"` again on the same track | 409 — a track can only have one active pivot at a time |
+| DEC-16 | kt_record_decision | Positive | Track has an active pivot with decision id D (from DEC-14) | `effect="resolve_pivot"`, `expected_pivot_decision_id=D` | 200/201; `{decision_id}` returned; `tracks.pivot_decision_id` cleared/updated per T2.16 final design |
+| DEC-17 | kt_record_decision | Negative | Track has no active pivot | `effect="resolve_pivot"`, `expected_pivot_decision_id=<any uuid>` | 409 — "track has no active pivot to resolve" |
+| DEC-18 | kt_record_decision | Negative (conflict) | Track has an active pivot with decision id D | `effect="resolve_pivot"`, `expected_pivot_decision_id=<a different uuid>` | 409 — "pivot changed since you last read this track"; response includes both `expected_pivot_decision_id` and `current_pivot_decision_id` |
+| DEC-19 | kt_record_decision | Negative (validation) | Track exists | `effect="resolve_pivot"`, `expected_pivot_decision_id` omitted | 400 — required when resolving a pivot |
+| DEC-20 | kt_record_decision | Negative (validation) | Track exists | `effect="note"` (or `open_pivot`), `expected_pivot_decision_id` set | 400 — only valid when `effect="resolve_pivot"` |
+| DEC-21 | kt_record_decision | See CONC-01/02 | Track has an active pivot with decision id D | Two simultaneous `resolve_pivot` calls with `expected_pivot_decision_id=D` | Exactly one succeeds (200/201); the other gets 409 "pivot changed since you last read this track" — no double-resolve, cross-referenced in §18 |
 
 ---
 
@@ -506,3 +520,4 @@ For traceability against the task brief:
 - [x] `kt_get_next_steps`: unblocked-only, empty-when-all-blocked-or-done, explicit never-writes negative test (§12)
 - [x] `kt_render_roadmap`: reflects current DB state exactly, twice-with-no-changes byte-identical, explicit zero-writes negative test (§14)
 - [x] Adapters: no-adapter-configured clean error (not crash) for both sync tools, credential-never-in-response swept across all 14 tools (§15, §16, §19)
+- [x] T2.16 decision/pivot lifecycle: `effect` default, `open_pivot`/`resolve_pivot` happy paths, double-open conflict, resolve-with-no-active-pivot, resolve-with-stale `expected_pivot_decision_id`, `expected_pivot_decision_id` required-iff-resolving validation, concurrent double-resolve race (§10, DEC-13–DEC-21)
