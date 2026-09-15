@@ -311,7 +311,8 @@ A track is a coherent unit of work within a project (roughly: an epic/initiative
 | `id` | `uuid` | PK, default `gen_random_uuid()` | |
 | `project_id` | `uuid` | `NOT NULL`, FK → `projects.id`, `ON DELETE CASCADE` | |
 | `title` | `text` | `NOT NULL` | |
-| `pivot_decision_id` | `uuid` | nullable, composite FK → `decisions(id, track_id)`, `ON DELETE NO ACTION` (added by `migrations/006_derived_track_status.sql`, T2.16) | A pointer, not a boolean: `NULL` = no active pivot; otherwise the id of the `decisions` row that opened the currently-active pivot. See [`track_readiness`](#view-track_readiness) below for how this feeds derived `status`. |
+| `pivot_decision_id` | `uuid` | nullable, composite FK → `decisions(id, track_id, effect)`, `ON DELETE NO ACTION` (added by `migrations/006_derived_track_status.sql`, T2.16; widened to a 3-column FK by `migrations/008_pivot_and_dependency_hardening.sql`, PR #16 escalated finding 1) | A pointer, not a boolean: `NULL` = no active pivot; otherwise the id of the `decisions` row that opened the currently-active pivot. See [`track_readiness`](#view-track_readiness) below for how this feeds derived `status`. |
+| `pivot_effect` | `text` | `GENERATED ALWAYS AS ('open_pivot') STORED` (added by `migrations/008_pivot_and_dependency_hardening.sql`) | Not a real fact about this track — a constant column that exists purely so `pivot_decision_id`'s FK can require the target decision's `effect` to actually be `'open_pivot'`, not just any decision on the right track (migration 006's FK only checked the latter). See the finding-1 note under `decisions_id_track_effect_key` below. |
 | `source_doc_ref` | `text` | nullable | e.g. a design doc URL or Linear project/issue reference the track was derived from |
 | `last_github_sync_at` | `timestamptz` | nullable | Set only by a successful `kt_sync_to_github` call (still a stub as of `migrations/005_tracks_sync_timestamps.sql` — T6 hasn't started). `NULL` means never synced, not "synced at epoch". Feeds the `SYNC_DRIFT` drift-flag rule (Appendix B). Scoped per track, not on `adapters`, so two tracks in the same project sharing one GitHub adapter don't share one timestamp — see that migration's header comment for the full reasoning (decided by Paul, 2026-08-25). |
 | `last_linear_sync_at` | `timestamptz` | nullable | Same as `last_github_sync_at`, for `kt_sync_to_linear`. |
@@ -369,10 +370,24 @@ row.
 |---|---|---|---|
 | `track_id` | `uuid` | PK (composite), FK → `tracks.id`, `ON DELETE CASCADE` | The dependent track |
 | `depends_on_track_id` | `uuid` | PK (composite), FK → `tracks.id`, `ON DELETE CASCADE` | The prerequisite track |
+| `project_id` | `uuid` | `NOT NULL` (added by `migrations/008_pivot_and_dependency_hardening.sql`, PR #16 escalated finding 3) | Denormalized from both tracks' `project_id`, backed by the two FKs below — see the finding-3 note beneath the constraints list. |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
 
 **Constraints:** `ck_track_dependencies_no_self_dep` — `CHECK (track_id <>
 depends_on_track_id)`, preventing a track from depending on itself at the row level.
+
+- `td_track_same_project` — `FOREIGN KEY (track_id, project_id) REFERENCES tracks (id, project_id)`.
+- `td_dep_same_project` — `FOREIGN KEY (depends_on_track_id, project_id) REFERENCES tracks (id, project_id)`.
+
+Both added by migration 008, backed by a new `tracks_id_project_key UNIQUE (id, project_id)`.
+Before this migration, nothing below the application layer stopped a dependency edge
+from crossing project boundaries — `kt_create_track` (`create-track.ts`) has always
+resolved `depends_on` scoped to `input.project_id` and 404s anything outside it, so in
+practice only same-project edges were ever created, but that was an app-layer
+invariant, not a schema one, exactly like the gap findings 1 and 2 closed for
+`pivot_decision_id`/`resolves_decision_id`. A future writer, migration, or raw SQL
+session had nothing stopping it. `insertTrackDependencies` (`src/db/queries/tracks.ts`)
+now sets `project_id` on every edge it writes.
 
 **Cycle prevention:** A `CHECK` constraint can only see the row being inserted, so it
 can block direct self-dependency (`A → A`) but **cannot** detect or prevent a
@@ -384,6 +399,42 @@ multi-hop cycle. This is layered on top of, not a replacement for, the
 application-level check in `src/domain/dependency-graph.ts` (shared by
 `kt_create_track` and `kt_create_item`) — the trigger is the last line of defense
 against any future write path that bypasses the application layer.
+
+**Hardened by migration 008 (PR #16 escalated finding 4):** two fixes to
+`reject_track_dependency_cycle()`, both found by the frontier-panel review of PR #16's
+escalated findings and neither reachable through today's tool set (`kt_create_track`
+only ever links a brand-new track to already-existing ones, one `INSERT` at a time) —
+but both real, and both prerequisites for whatever future tool edits existing edges:
+  1. **Snapshot-isolation race:** the function now opens with
+     `pg_advisory_xact_lock(hashtext(NEW.project_id::text))`, serializing all
+     dependency-graph mutations within one project. Without it, two concurrent inserts
+     — say `A→B` and `B→A` — could each independently pass their own reachability check
+     under READ COMMITTED (neither sees the other's uncommitted row) and both succeed,
+     silently persisting a real cycle neither transaction individually appeared to
+     create.
+  2. **`UPDATE`-path false positive:** a `BEFORE UPDATE` trigger fires before the row's
+     own change is applied, so a query against `track_dependencies` mid-trigger still
+     sees that row's *old* value. Without excluding it, correcting an edge `A→B` to
+     `B→A` via `UPDATE` would see the stale `A→B` edge still "in" the graph while
+     checking whether `B→A` closes a cycle, and reject a legitimate correction. The
+     reachability CTE now excludes the specific `(OLD.track_id, OLD.depends_on_track_id)`
+     row from the walk when `TG_OP = 'UPDATE'`.
+
+**Scope of the advisory-lock fix (raised by Codex's automated review of this PR):** the
+lock closes the snapshot-isolation race for **READ COMMITTED** writers only — the
+isolation level `src/db/tx.ts`'s `withTransaction` uses, and the only one any write path
+in this codebase ever uses against `track_dependencies` (`withReadSnapshot`'s
+`REPEATABLE READ` transactions are `READ ONLY`, so they can never reach this trigger).
+An advisory lock blocks *execution order*, not MVCC *snapshot visibility*: a
+hypothetical `REPEATABLE READ` writer's reachability query would still run against the
+snapshot taken at its transaction's start, so it could remain blind to a
+concurrently-committed edge even after the lock releases. (A `SERIALIZABLE` writer would
+not have this gap — Postgres's own serializable-snapshot-isolation machinery
+independently detects this exact write-skew pattern and aborts one transaction with
+SQLSTATE `40001` — but nothing here uses `SERIALIZABLE` either.) Not fixed, since no
+writer at either isolation level exists against this table today — deferred until one is
+actually proposed, rather than adding isolation-level enforcement or a retry protocol
+against a hypothetical writer.
 
 **Indexes:** the composite PK already indexes `(track_id, depends_on_track_id)` (and
 therefore serves "what does track X depend on" lookups). `idx_track_dependencies_depends_on`
@@ -485,15 +536,18 @@ surface (`kt_record_event` vs. `kt_record_decision`).
 | `what_changed` | `text` | nullable, `NOT NULL` when `effect IN ('open_pivot','resolve_pivot')` | What concretely changed as a result |
 | `effect` | `text` | `NOT NULL DEFAULT 'note'`, `CHECK IN ('note','open_pivot','resolve_pivot')` (added by migration 006, T2.16) | What this decision does to the track's pivot state. `'note'` (default): no side effect. `'open_pivot'`: this decision becomes the track's active pivot. `'resolve_pivot'`: this decision closes the pivot named in `resolves_decision_id`. |
 | `resolves_decision_id` | `uuid` | nullable, self FK → `decisions.id` (added by migration 006, T2.16) | Set only on an `effect = 'resolve_pivot'` row, pointing at the `open_pivot` decision it resolves. |
+| `resolves_target_effect` | `text` | `GENERATED ALWAYS AS (CASE WHEN resolves_decision_id IS NOT NULL THEN 'open_pivot' END) STORED` (added by `migrations/008_pivot_and_dependency_hardening.sql`) | Same trick as `tracks.pivot_effect`: exists purely so `resolves_decision_id`'s FK can require the target's `effect` to actually be `'open_pivot'`. `NULL` whenever `resolves_decision_id` is `NULL` (i.e. every `'note'`/`'open_pivot'` row). |
 | `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | No `updated_at` — append-only |
 
 **Constraints (added by migration 006, T2.16):**
-- `decisions_id_track_id_key` — `UNIQUE (id, track_id)`. Exists solely so `tracks.pivot_decision_id` can carry a composite FK to `(id, track_id)` instead of just `id`, enforcing at the database level that a track's pivot pointer can only ever reference a decision that belongs to that same track.
+- `decisions_id_track_id_key` — `UNIQUE (id, track_id)`. Exists solely so `tracks.pivot_decision_id` could carry a composite FK to `(id, track_id)` instead of just `id`; superseded as that FK's target by `decisions_id_track_effect_key` below (migration 008), but left in place since `decisions_resolves_same_track_fk` no longer references it either — kept only because dropping a constraint nothing depends on isn't worth the migration noise.
 - `decisions_resolves_decision_id_uq` — partial unique index on `(resolves_decision_id) WHERE resolves_decision_id IS NOT NULL`. A given pivot-opening decision can be resolved by at most one `resolve_pivot` row, ever — this is what makes `kt_record_decision`'s resolve path a real compare-and-set rather than one of several possible resolutions racing.
 - `decisions_resolves_requires_effect` — `CHECK ((resolves_decision_id IS NOT NULL) = (effect = 'resolve_pivot'))`: the two fields are set together or not at all.
 
-**Constraint (added by migration 007, PR #16 escalated finding 2):**
-- `decisions_resolves_same_track_fk` — `FOREIGN KEY (resolves_decision_id, track_id) REFERENCES decisions (id, track_id)`, reusing `decisions_id_track_id_key` from the other direction. Migration 006 enforced "a pivot pointer targets a decision on the same track" for `tracks.pivot_decision_id`, but missed the identical invariant for `resolves_decision_id`, so nothing at the database level stopped a `resolve_pivot` row from pointing at a decision on a different track (or a different project). `kt_record_decision` itself can never produce that shape (`expected_pivot_decision_id` is always looked up scoped to the target track), so this is defense-in-depth against any other writer, not a fix to an app-level bug. It does not yet verify the target decision's `effect = 'open_pivot'` (a decision could still resolve a plain `'note'` on the same track) — that half, plus the same fix for `tracks.pivot_decision_id`'s own effect gap, is a follow-up migration using a generated-column composite FK with `MATCH FULL`.
+**Constraints (added by migration 008, PR #16 escalated findings 1 & 2 full fix):**
+- `decisions_id_track_effect_key` — `UNIQUE (id, track_id, effect)`. Backs both three-column composite FKs below (`tracks.pivot_decision_id`'s and `resolves_decision_id`'s), each of which now verifies same-track **and** the correct `effect`, not just same-track.
+- `decisions_resolves_open_pivot_fk` — `FOREIGN KEY (resolves_decision_id, track_id, resolves_target_effect) REFERENCES decisions (id, track_id, effect)`. Supersedes migration 007's `decisions_resolves_same_track_fk` (dropped by migration 008): a strict superset that also verifies the target's `effect = 'open_pivot'`, closing the remaining half of finding 2 (a `resolve_pivot` row could otherwise resolve a same-track plain `'note'`).
+- `trg_decisions_track_id_required_for_pivots` (`BEFORE INSERT` trigger, backed by `reject_pivot_decision_without_track()`) — rejects any new row with `effect <> 'note'` and a `NULL` `track_id`. Closes the actual gap Astra's panel review identified for finding 2 (a `resolve_pivot` row with a `NULL` `track_id` would bypass the composite FK above under its default `MATCH SIMPLE`) — **not** via `MATCH FULL` as originally proposed, and **not** via a plain `CHECK` constraint either (the migration's first draft). `MATCH FULL` was verified, while implementing this migration, to reject every ordinary `'note'` decision that has a non-`NULL` `track_id` (the overwhelming majority of the table): Postgres's actual `MATCH FULL` rule is "no row may mix `NULL` and non-`NULL` key columns," not "skip unless every column is populated," and a plain note's `resolves_decision_id`/`resolves_target_effect` (`NULL`) alongside a normal `track_id` (non-`NULL`) is exactly that mixed shape. A `CHECK` constraint was then verified, in response to Codex's automated review of this same PR, to break the documented track-hard-delete/legal-erasure path: `decisions.track_id ... ON DELETE SET NULL` (see the `decisions` ON DELETE reasoning below) re-validates every `CHECK` on the row it nulls out, so any decision that ever recorded an `open_pivot`/`resolve_pivot` would make its own track undeletable. A `BEFORE INSERT`-only trigger gets the same protection where it's actually needed — `kt_record_decision` is the only path that ever writes a `decisions` row — without re-firing on that FK-driven `UPDATE`.
 
 **Indexes:** `idx_decisions_project_id` on `(project_id)`, `idx_decisions_track_id` on
 `(track_id)`, `decisions_track_id_effect_idx` on `(track_id, effect)` (migration 006,
