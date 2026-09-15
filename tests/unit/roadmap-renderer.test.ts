@@ -96,6 +96,52 @@ describe('renderMarkdownRoadmap', () => {
       '# Roadmap: P\n_Generated 2026-01-01T00:00:00.000Z_\n\n## Empty track — on_track\n',
     );
   });
+
+  // T2.16 (docs/TRD.md's "(dependency chain incomplete)" section): the
+  // annotation fires only for a track whose derived `status` is actually
+  // `done` — own_done/effective_done alone don't say why a track isn't
+  // effectively done, so stamping the annotation on a `pivot_pending` or
+  // `blocked` track would name the wrong cause (PR #16 CodeRabbit review).
+  it('appends "(dependency chain incomplete)" for a done track whose dependency chain has a gap', () => {
+    const tracks = [
+      { id: 't1', title: 'Payments core', status: 'done', own_done: true, effective_done: false },
+    ];
+    const result = renderMarkdownRoadmap(
+      'P',
+      new Date('2026-01-01T00:00:00.000Z'),
+      tracks,
+      new Map(),
+    );
+    expect(result).toContain('## Payments core — done (dependency chain incomplete)');
+  });
+
+  it('does not append the gap annotation to a pivot_pending or blocked track', () => {
+    const tracks = [
+      {
+        id: 't1',
+        title: 'Pivoting track',
+        status: 'pivot_pending',
+        own_done: true,
+        effective_done: false,
+      },
+      {
+        id: 't2',
+        title: 'Blocked track',
+        status: 'blocked',
+        own_done: true,
+        effective_done: false,
+      },
+    ];
+    const result = renderMarkdownRoadmap(
+      'P',
+      new Date('2026-01-01T00:00:00.000Z'),
+      tracks,
+      new Map(),
+    );
+    expect(result).toContain('## Pivoting track — pivot_pending\n');
+    expect(result).toContain('## Blocked track — blocked\n');
+    expect(result).not.toContain('dependency chain incomplete');
+  });
 });
 
 describe('renderMermaidRoadmap', () => {

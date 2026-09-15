@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { getNextStepsService } from '../../src/mcp/tools/get-next-steps.js';
 import { createItemService } from '../../src/mcp/tools/create-item.js';
 import { createTrackService } from '../../src/mcp/tools/create-track.js';
+import { recordDecisionService } from '../../src/mcp/tools/record-decision.js';
 import { registerProjectService } from '../../src/mcp/tools/register-project.js';
 import { closeTestPool, getTestConfig, getTestPool, truncateAll, UNKNOWN_UUID } from './helpers.js';
 
@@ -136,12 +137,18 @@ describe('kt_get_next_steps', () => {
     expect(result.recommended_items[0]?.item_id).toBe(dep.item_id);
   });
 
-  it('negative: excludes every item in a track whose stored status is blocked, even if individually ready', async () => {
+  it('negative (T2.16): excludes every item in a track with an unfinished direct dependency, even if individually ready', async () => {
     const projectId = await makeProject();
+    const prereq = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'Prereq (not done)',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
     const track = await createTrackService(pool, config, {
       project_id: projectId,
       title: 'Blocked track',
-      depends_on: [],
+      depends_on: [prereq.track_id],
       source_doc_ref: undefined,
     });
     await createItemService(pool, config, {
@@ -151,10 +158,61 @@ describe('kt_get_next_steps', () => {
       sequence_position: undefined,
       depends_on: [],
     });
-    await pool.query(`UPDATE tracks SET status = 'blocked' WHERE id = $1`, [track.track_id]);
 
     const result = await getNextStepsService(pool, config, { project_id: projectId });
 
+    expect(result.recommended_items).toEqual([]);
+  });
+
+  it('negative (T2.16): excludes every item in a track whose direct dependency is only locally OK, not effective_done (two-hop drift)', async () => {
+    // Regression test for the exact drift gap T2.16 exists to close:
+    // trackB's direct dependency (trackA) is itself "locally OK" (its own
+    // items are done, no pivot) but trackA's OWN dependency (trackRoot)
+    // is not — so trackA's `status` alone would look fine, yet nothing
+    // downstream of it is actually safe to build on.
+    const projectId = await makeProject();
+    const trackRoot = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'Root (never finished)',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const trackA = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'A (own work done, but depends on an unfinished root)',
+      depends_on: [trackRoot.track_id],
+      source_doc_ref: undefined,
+    });
+    await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackA.track_id,
+      title: 'A item',
+      sequence_position: undefined,
+      depends_on: [],
+    }).then((item) => pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [item.item_id]));
+    const trackB = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'B (depends on A)',
+      depends_on: [trackA.track_id],
+      source_doc_ref: undefined,
+    });
+    await createItemService(pool, config, {
+      project_id: projectId,
+      track_id: trackB.track_id,
+      title: 'B item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+
+    const result = await getNextStepsService(pool, config, { project_id: projectId });
+
+    // The exact case old "track.status === 'blocked'" logic would have
+    // missed: trackB's direct dependency (trackA) is only *locally* OK
+    // (its own item is done, no pivot), so trackB's own derived `status`
+    // actually reads `on_track` — but trackA's `effective_done` is false
+    // because trackA's own dependency (root) is unfinished. Recommending
+    // trackB's item would mean recommending work built on a foundation
+    // that isn't real.
     expect(result.recommended_items).toEqual([]);
   });
 
@@ -172,7 +230,14 @@ describe('kt_get_next_steps', () => {
       depends_on: [],
       source_doc_ref: undefined,
     });
-    await pool.query(`UPDATE tracks SET status = 'pivot_pending' WHERE id = $1`, [trackB.track_id]);
+    await recordDecisionService(pool, config, {
+      project_id: projectId,
+      track_id: trackB.track_id,
+      title: 'Pivot',
+      rationale: 'R',
+      what_changed: 'C',
+      effect: 'open_pivot',
+    });
 
     // Deliberately seeded so that a naive "earliest created_at wins"
     // implementation would rank these in the wrong order — only the

@@ -5,7 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
 import { getNextStepsInputSchema, type GetNextStepsInput } from '../../schemas/tools.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { getTrackSummariesForProject } from '../../db/queries/tracks.js';
+import { getTrackSummariesForProject, getTrackDependencyEdges } from '../../db/queries/tracks.js';
 import { listPendingItemsForProject, getItemStatusesByIds } from '../../db/queries/items.js';
 import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
@@ -30,6 +30,7 @@ export async function getNextStepsService(
     // Sequential, not Promise.all: these share one PoolClient — see
     // get-project-status.ts's comment on why these aren't run concurrently.
     const tracks = await getTrackSummariesForProject(client, input.project_id);
+    const trackEdges = await getTrackDependencyEdges(client, input.project_id);
     const pendingItems = await listPendingItemsForProject(client, input.project_id);
 
     // adversarial-review P2: only look up the status of items actually
@@ -46,7 +47,33 @@ export async function getNextStepsService(
     );
     const itemStatusById = await getItemStatusesByIds(client, dependencyIds);
 
-    const tracksById = new Map(tracks.map((t) => [t.id, { title: t.title, status: t.status }]));
+    // T2.16: a track's direct dependencies must all be effective_done —
+    // the fully-transitive fact — not merely "locally OK", for that
+    // track's items to be safe to recommend. A track with no dependencies
+    // is vacuously true. See next-steps.ts's NextStepsTrackInput doc
+    // comment for the full reasoning.
+    const effectiveDoneById = new Map(tracks.map((t) => [t.id, t.effective_done]));
+    const directDepsByTrack = new Map<string, string[]>();
+    for (const edge of trackEdges) {
+      const list = directDepsByTrack.get(edge.from);
+      if (list) {
+        list.push(edge.to);
+      } else {
+        directDepsByTrack.set(edge.from, [edge.to]);
+      }
+    }
+    const tracksById = new Map(
+      tracks.map((t) => [
+        t.id,
+        {
+          title: t.title,
+          status: t.status,
+          dependenciesEffectivelyDone: (directDepsByTrack.get(t.id) ?? []).every(
+            (depId) => effectiveDoneById.get(depId) === true,
+          ),
+        },
+      ]),
+    );
 
     const recommended_items = rankNextSteps(
       pendingItems.map((item) => ({

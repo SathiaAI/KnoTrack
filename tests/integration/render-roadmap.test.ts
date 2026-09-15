@@ -172,7 +172,7 @@ describe('kt_render_roadmap', () => {
     const trackIds: string[] = [];
     for (let i = 0; i < 5; i++) {
       const inserted = await pool.query<{ id: string }>(
-        `INSERT INTO tracks (project_id, title, status) VALUES ($1, $2, 'on_track') RETURNING id`,
+        `INSERT INTO tracks (project_id, title) VALUES ($1, $2) RETURNING id`,
         [projectId, `Track ${i}`],
       );
       trackIds.push(inserted.rows[0]!.id);
@@ -227,10 +227,10 @@ describe('kt_render_roadmap', () => {
   it('positive: mermaid truncation notice is a %% comment, not a markdown blockquote (valid Mermaid syntax)', async () => {
     const projectId = await makeProject();
     for (let i = 0; i < 3; i++) {
-      await pool.query(
-        `INSERT INTO tracks (project_id, title, status) VALUES ($1, $2, 'on_track')`,
-        [projectId, `Track ${i}`],
-      );
+      await pool.query(`INSERT INTO tracks (project_id, title) VALUES ($1, $2)`, [
+        projectId,
+        `Track ${i}`,
+      ]);
     }
 
     const smallCapConfig = { ...config, roadmapTrackCap: 2 };
