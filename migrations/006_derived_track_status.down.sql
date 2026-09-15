@@ -20,11 +20,20 @@ BEGIN;
 ALTER TABLE tracks ADD COLUMN status text;
 
 -- Snapshot the view's current computed value before the view itself is
--- dropped below.
+-- dropped below. Disabled/re-enabled around trg_tracks_set_updated_at
+-- (Codex re-review, PR #16): that trigger unconditionally sets
+-- updated_at = now() on any UPDATE, so without this every track would
+-- appear freshly modified purely from rolling this migration back —
+-- the same reasoning migrations/006_derived_track_status.sql's own
+-- forward backfill already applies to its analogous UPDATE.
+ALTER TABLE tracks DISABLE TRIGGER trg_tracks_set_updated_at;
+
 UPDATE tracks
 SET status = track_readiness.status
 FROM track_readiness
 WHERE tracks.id = track_readiness.id;
+
+ALTER TABLE tracks ENABLE TRIGGER trg_tracks_set_updated_at;
 
 ALTER TABLE tracks
   ALTER COLUMN status SET NOT NULL,
