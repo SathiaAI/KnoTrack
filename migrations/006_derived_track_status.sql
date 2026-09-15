@@ -213,21 +213,28 @@ CREATE INDEX tracks_pivot_decision_id_idx
 -- application-level cycle check treats the whole graph, including the
 -- bad edges, as ground truth. Abort rather than install the trigger on
 -- top of data it can't vouch for.
+--
+-- Deduplicated reachability, not full path tracking (PR #16 CodeRabbit
+-- re-review): the first cut of this check kept every distinct path via
+-- UNION ALL, which on a dense-but-acyclic graph can carry exponentially
+-- many rows and exhaust memory/temp disk before this DO block ever
+-- finishes. Tracking only distinct (start_node, node) reachability pairs
+-- via plain UNION and flagging start_node = node is enough to detect a
+-- cycle and matches the same closure pattern reject_track_dependency_
+-- cycle()'s own `reach` CTE already uses below.
 DO $$
 DECLARE
   cycle_exists boolean;
 BEGIN
-  WITH RECURSIVE walk(start_node, node, path, is_cycle) AS (
-    SELECT track_id, depends_on_track_id, ARRAY[track_id], false
+  WITH RECURSIVE walk(start_node, node) AS (
+    SELECT track_id, depends_on_track_id
     FROM track_dependencies
-    UNION ALL
-    SELECT w.start_node, td.depends_on_track_id, w.path || td.depends_on_track_id,
-           td.depends_on_track_id = ANY (w.path)
+    UNION
+    SELECT w.start_node, td.depends_on_track_id
     FROM track_dependencies td
     JOIN walk w ON td.track_id = w.node
-    WHERE NOT w.is_cycle
   )
-  SELECT EXISTS (SELECT 1 FROM walk WHERE is_cycle) INTO cycle_exists;
+  SELECT EXISTS (SELECT 1 FROM walk WHERE start_node = node) INTO cycle_exists;
 
   IF cycle_exists THEN
     RAISE EXCEPTION
