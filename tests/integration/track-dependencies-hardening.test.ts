@@ -98,7 +98,7 @@ describe('migration 008 (PR #16 escalated finding 3): track_dependencies project
     });
   });
 
-  it('positive: a same-project edge, correctly tagged, is accepted (kt_create_track\'s own path)', async () => {
+  it("positive: a same-project edge, correctly tagged, is accepted (kt_create_track's own path)", async () => {
     const projectId = await makeProject();
     const a = await createTrackService(pool, config, {
       project_id: projectId,
@@ -188,15 +188,7 @@ describe('migration 008 (PR #16 escalated finding 4): cycle trigger — UPDATE f
     // C -> D we'll repoint via UPDATE.
     await pool.query(
       'INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES ($1, $2, $3), ($4, $5, $3), ($6, $7, $3)',
-      [
-        a.track_id,
-        b.track_id,
-        projectId,
-        b.track_id,
-        c.track_id,
-        c.track_id,
-        d.track_id,
-      ],
+      [a.track_id, b.track_id, projectId, b.track_id, c.track_id, c.track_id, d.track_id],
     );
 
     // Repointing the unrelated C->D edge into C->A would close a real

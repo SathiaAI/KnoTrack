@@ -147,8 +147,21 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- BEFORE INSERT OR UPDATE OF effect, resolves_decision_id (CodeRabbit
+-- re-review): an INSERT-only trigger misses an UPDATE that flips an
+-- existing trackless 'note' decision's effect to 'open_pivot', or to
+-- 'resolve_pivot' with resolves_decision_id set — the composite FK above
+-- uses MATCH SIMPLE, so its own NULL track_id would skip validation on
+-- that path too. Scoped to just these two columns (via UPDATE OF) so the
+-- documented track-hard-delete path (decisions.track_id ... ON DELETE SET
+-- NULL) still only ever touches track_id and is unaffected: that path
+-- can't flip effect or resolves_decision_id, so it never re-fires this
+-- guard, and a decision already correctly carrying effect <> 'note' with
+-- track_id NULL'd out by the delete cascade is a separate, pre-existing
+-- gap (that FK's NULL track_id already skips validation there too) that
+-- this trigger was never meant to and still does not cover.
 CREATE TRIGGER trg_decisions_track_id_required_for_pivots
-  BEFORE INSERT ON decisions
+  BEFORE INSERT OR UPDATE OF effect, resolves_decision_id ON decisions
   FOR EACH ROW
   EXECUTE FUNCTION reject_pivot_decision_without_track();
 
