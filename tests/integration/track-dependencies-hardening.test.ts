@@ -275,4 +275,79 @@ describe('migration 008 (PR #16 escalated finding 4): cycle trigger — UPDATE f
       await client2.end();
     }
   });
+
+  // Codex automated re-review of this PR: migration 008 also adds a
+  // migration-time validation (run before any of its other changes) that
+  // aborts if track_dependencies already contains a cycle — e.g. one that
+  // slipped in through the very snapshot-isolation race this migration
+  // closes, before it was closed. Exercising that requires a cycle to
+  // exist in the table despite the trigger, which in a live, fully
+  // migrated database (what `pool` here is) can only be fabricated by
+  // disabling the trigger; running the actual migration file against a
+  // pre-006 database is out of scope for this integration suite (see
+  // tests/integration/migrate.test.ts for that kind of test), so this
+  // exercises the validation's own reachability query directly — the same
+  // one migrations/008_pivot_and_dependency_hardening.sql runs — against
+  // fabricated pre-existing cycle data.
+  it('negative (migration 008, Codex re-review): the pre-existing-cycle validation query detects a cycle already present in the data', async () => {
+    const projectId = await makeProject();
+    const a = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'A',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    const b = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'B',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+
+    await pool.query(
+      'ALTER TABLE track_dependencies DISABLE TRIGGER trg_track_dependencies_no_cycle',
+    );
+    try {
+      await pool.query(
+        `INSERT INTO track_dependencies (track_id, depends_on_track_id, project_id) VALUES
+           ($1, $2, $3), ($2, $1, $3)`,
+        [a.track_id, b.track_id, projectId],
+      );
+    } finally {
+      await pool.query(
+        'ALTER TABLE track_dependencies ENABLE TRIGGER trg_track_dependencies_no_cycle',
+      );
+    }
+
+    await expect(
+      pool.query(`
+        DO $$
+        DECLARE
+          cyclic_track_id uuid;
+        BEGIN
+          SELECT start_node INTO cyclic_track_id
+          FROM (
+            WITH RECURSIVE reach(start_node, node) AS (
+              SELECT track_id, depends_on_track_id FROM track_dependencies
+              UNION
+              SELECT r.start_node, td.depends_on_track_id
+              FROM track_dependencies td
+              JOIN reach r ON td.track_id = r.node
+            )
+            SELECT start_node FROM reach WHERE node = start_node
+          ) cycles
+          LIMIT 1;
+
+          IF cyclic_track_id IS NOT NULL THEN
+            RAISE EXCEPTION 'track_dependencies: a pre-existing dependency cycle reaching back to track % was found', cyclic_track_id
+              USING ERRCODE = '23514';
+          END IF;
+        END;
+        $$;
+      `),
+    ).rejects.toMatchObject({
+      code: '23514',
+      message: expect.stringContaining('pre-existing dependency cycle'),
+    });
+  });
 });

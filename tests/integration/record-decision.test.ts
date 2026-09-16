@@ -537,17 +537,50 @@ describe('kt_record_decision', () => {
       });
     });
 
-    // The negative-space companion to the two UPDATE-rejection tests just
-    // above — confirming the UPDATE OF effect, resolves_decision_id guard
-    // doesn't also start firing on the real track_id-only path a hard
+    it('negative (migration 008, Codex re-review): a raw UPDATE directly nulling track_id on a live (but no-longer-active) pivot decision is rejected', async () => {
+      // tracks_pivot_decision_fk only protects a decision while it's still
+      // the track's *current* pivot (tracks.pivot_decision_id points at
+      // it) — resolving a pivot clears that pointer (src/db/queries/tracks.ts,
+      // resolvePivot), so an already-resolved open_pivot decision has no
+      // other guard against a direct track_id-nulling UPDATE. This is the
+      // gap trg_decisions_track_id_required_for_pivots now also closes by
+      // including track_id in its UPDATE OF list.
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+      await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Resolve',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'resolve_pivot',
+        expected_pivot_decision_id: opened.decision_id,
+      });
+
+      await expect(
+        pool.query('UPDATE decisions SET track_id = NULL WHERE id = $1', [opened.decision_id]),
+      ).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining('requires a non-NULL track_id'),
+      });
+    });
+
+    // The companion, cascade-allowed side of the test just above — that
+    // trg_decisions_track_id_required_for_pivots's new track_id coverage
+    // doesn't also start rejecting the real track_id-only UPDATE a hard
     // track delete's ON DELETE SET NULL performs — is already covered by
     // "hard-deleting a track that has an open_pivot decision still
-    // succeeds" earlier in this describe block; a direct
-    // `UPDATE decisions SET track_id = NULL` here (rather than deleting
-    // the track) trips the unrelated tracks_pivot_decision_fk instead,
-    // since that FK requires tracks.pivot_decision_id's (id, track_id)
-    // target to keep existing — it isn't a valid way to exercise this
-    // path and would just duplicate that existing test if fixed to delete
-    // the track instead.
+    // succeeds" earlier in this describe block (re-verified against a live
+    // database after this trigger's scope was widened): the function tells
+    // the two apart by checking, only on UPDATE, whether OLD.track_id's row
+    // in `tracks` still exists — gone means the cascade already deleted it.
   });
 });

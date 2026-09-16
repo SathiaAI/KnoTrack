@@ -92,6 +92,59 @@
 BEGIN;
 
 -- ============================================================
+-- Retroactive check (Codex automated review of this PR), run first and
+-- ahead of every other change below: Finding 4's replacement of
+-- reject_track_dependency_cycle() only protects mutations from this point
+-- forward. track_dependencies has existed since migration 001 and its
+-- cycle-prevention trigger (migration 006) carried the exact
+-- snapshot-isolation race Finding 4 closes — if two concurrent inserts
+-- already exploited that race against a live deployment before this
+-- migration ran, the graph could already contain a cycle that replacing
+-- the trigger function later in this file does nothing, on its own, to
+-- detect. (In practice Finding 3's project_id backfill below touches every
+-- existing row and would incidentally re-fire the still-installed
+-- migration-006 trigger against the whole graph too — but that's a side
+-- effect of an unrelated column backfill, not a guarantee; this check runs
+-- first, deliberately, and gives a clear, actionable error instead of
+-- whatever generic message an incidental re-fire happens to produce.)
+-- ============================================================
+
+-- Same reachability walk as the trigger's own `reach` CTE (UNION, not
+-- UNION ALL, so a cycle in the existing data terminates the walk instead
+-- of looping), applied to every existing edge instead of one candidate
+-- edge: aborts the migration with remediation guidance rather than
+-- attempting to silently repair data whose correct edge to remove this
+-- migration has no way to infer.
+DO $$
+DECLARE
+  cyclic_track_id uuid;
+BEGIN
+  SELECT start_node INTO cyclic_track_id
+  FROM (
+    WITH RECURSIVE reach(start_node, node) AS (
+      SELECT track_id, depends_on_track_id FROM track_dependencies
+      UNION
+      SELECT r.start_node, td.depends_on_track_id
+      FROM track_dependencies td
+      JOIN reach r ON td.track_id = r.node
+    )
+    SELECT start_node FROM reach WHERE node = start_node
+  ) cycles
+  LIMIT 1;
+
+  IF cyclic_track_id IS NOT NULL THEN
+    RAISE EXCEPTION
+      'track_dependencies: a pre-existing dependency cycle reaching back to track %'
+      ' was found before this migration could install its hardened cycle-prevention'
+      ' trigger. This must be resolved manually — identify and remove the offending'
+      ' edge(s) in track_dependencies for that track — before re-running this migration.',
+      cyclic_track_id
+      USING ERRCODE = '23514'; -- check_violation, consistent with this schema's other invariant-rejection errors
+  END IF;
+END;
+$$;
+
+-- ============================================================
 -- Finding 1 + Finding 2: shared unique key backing both effect-typed
 -- composite FKs below.
 -- ============================================================
@@ -139,29 +192,45 @@ ALTER TABLE tracks
 CREATE FUNCTION reject_pivot_decision_without_track() RETURNS trigger AS $$
 BEGIN
   IF NEW.effect <> 'note' AND NEW.track_id IS NULL THEN
-    RAISE EXCEPTION
-      'decisions: effect=% requires a non-NULL track_id (id=%)', NEW.effect, NEW.id
-      USING ERRCODE = '23514'; -- check_violation, consistent with this schema's other invariant-rejection errors
+    -- The one legitimate way an open_pivot/resolve_pivot decision's
+    -- track_id ever becomes NULL: the FK-driven ON DELETE SET NULL cascade
+    -- (migrations/001_init.sql, decisions.track_id) that fires when the
+    -- referenced track is hard-deleted. That cascade's internal UPDATE
+    -- reaches this trigger only after the track row is actually gone (same
+    -- statement, later command id within the same transaction), so
+    -- `tracks` no longer has a row for OLD.track_id by the time this runs.
+    -- A direct write that nulls track_id while the track still exists has
+    -- no such excuse (Codex automated review, PR #17/migration 008: a
+    -- decision no longer pointed to by tracks.pivot_decision_id — e.g. one
+    -- already resolved — isn't protected by tracks_pivot_decision_fk
+    -- either, so nothing else in the schema was rejecting this).
+    IF NOT (
+      TG_OP = 'UPDATE'
+      AND OLD.track_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM tracks WHERE id = OLD.track_id)
+    ) THEN
+      RAISE EXCEPTION
+        'decisions: effect=% requires a non-NULL track_id (id=%)', NEW.effect, NEW.id
+        USING ERRCODE = '23514'; -- check_violation, consistent with this schema's other invariant-rejection errors
+    END IF;
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- BEFORE INSERT OR UPDATE OF effect, resolves_decision_id (CodeRabbit
--- re-review): an INSERT-only trigger misses an UPDATE that flips an
--- existing trackless 'note' decision's effect to 'open_pivot', or to
--- 'resolve_pivot' with resolves_decision_id set — the composite FK above
--- uses MATCH SIMPLE, so its own NULL track_id would skip validation on
--- that path too. Scoped to just these two columns (via UPDATE OF) so the
--- documented track-hard-delete path (decisions.track_id ... ON DELETE SET
--- NULL) still only ever touches track_id and is unaffected: that path
--- can't flip effect or resolves_decision_id, so it never re-fires this
--- guard, and a decision already correctly carrying effect <> 'note' with
--- track_id NULL'd out by the delete cascade is a separate, pre-existing
--- gap (that FK's NULL track_id already skips validation there too) that
--- this trigger was never meant to and still does not cover.
+-- BEFORE INSERT OR UPDATE OF effect, resolves_decision_id, track_id
+-- (CodeRabbit + Codex re-review): an INSERT-only trigger misses an UPDATE
+-- that flips an existing trackless 'note' decision's effect to
+-- 'open_pivot', or to 'resolve_pivot' with resolves_decision_id set — the
+-- composite FK above uses MATCH SIMPLE, so its own NULL track_id would
+-- skip validation on that path too. track_id is also included (Codex
+-- automated review) so a direct `UPDATE decisions SET track_id = NULL` on
+-- a live open_pivot/resolve_pivot decision re-fires this guard instead of
+-- silently corrupting the decision's track association; the function
+-- above still lets the legitimate ON DELETE SET NULL cascade through by
+-- checking that the old track is actually gone.
 CREATE TRIGGER trg_decisions_track_id_required_for_pivots
-  BEFORE INSERT OR UPDATE OF effect, resolves_decision_id ON decisions
+  BEFORE INSERT OR UPDATE OF effect, resolves_decision_id, track_id ON decisions
   FOR EACH ROW
   EXECUTE FUNCTION reject_pivot_decision_without_track();
 
@@ -286,5 +355,9 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Note: no CREATE TRIGGER here — trg_track_dependencies_no_cycle already
+-- exists (migration 006) and keeps its existing definition; only its
+-- backing function is replaced above.
 
 COMMIT;
