@@ -224,6 +224,98 @@ describe('kt_render_roadmap', () => {
     expect(result.content).not.toContain('of 1 tracks');
   });
 
+  it('positive (PR #16 review, Codex re-review): a status flip caused by an item beyond the per-track cap still moves the _Generated timestamp (ROAD-08)', async () => {
+    const projectId = await makeProject();
+    const track = await createTrackService(pool, config, {
+      project_id: projectId,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
+    });
+    // Two items inside the cap, already done, plus a third item beyond the
+    // cap that starts pending — track_readiness.own_done (and therefore
+    // .status) needs ALL items done, so the track reads on_track until
+    // that third, uncapped item is also done.
+    await pool.query(
+      `INSERT INTO items (track_id, title, sequence_position, status) VALUES
+         ($1, 'Item 0', 0, 'done'), ($1, 'Item 1', 1, 'done')`,
+      [track.track_id],
+    );
+    const thirdItem = await pool.query<{ id: string }>(
+      `INSERT INTO items (track_id, title, sequence_position, status)
+       VALUES ($1, 'Item 2', 2, 'pending') RETURNING id`,
+      [track.track_id],
+    );
+    const thirdItemId = thirdItem.rows[0]!.id;
+
+    const smallItemCapConfig = { ...config, roadmapItemPerTrackCap: 2 };
+    const before = await renderRoadmapService(pool, smallItemCapConfig, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+    expect(before.content).toContain('## T — on_track');
+    const generatedBefore = before.content.match(/_Generated (.+)_/)?.[1];
+    expect(generatedBefore).toBeDefined();
+
+    // Flip the uncapped third item to done — this alone makes own_done
+    // (and therefore status) become true/'done', but its own updated_at
+    // is never part of the capped item slice kt_render_roadmap displays.
+    await pool.query(`UPDATE items SET status = 'done' WHERE id = $1`, [thirdItemId]);
+
+    const after = await renderRoadmapService(pool, smallItemCapConfig, {
+      project_id: projectId,
+      format: 'markdown',
+    });
+    expect(after.content).toContain('## T — done');
+    const generatedAfter = after.content.match(/_Generated (.+)_/)?.[1];
+    expect(generatedAfter).toBeDefined();
+    expect(generatedAfter).not.toBe(generatedBefore);
+    expect(new Date(generatedAfter!).getTime()).toBeGreaterThan(
+      new Date(generatedBefore!).getTime(),
+    );
+  });
+
+  it('negative (PR #16/#19 review, Codex re-review): a canceled optional aggregate must not abort the whole read-snapshot transaction', async () => {
+    // getMaxItemUpdatedAtByTrackIds in render-roadmap.ts is wrapped in a
+    // SAVEPOINT specifically because a statement canceled by
+    // statement_timeout (SQLSTATE 57014) leaves the *whole* surrounding
+    // transaction aborted, not just that one statement — every later
+    // query on the same client then fails with 25P02 until something
+    // rolls it back. This test exercises that exact Postgres mechanism
+    // directly (deterministic via a tiny statement_timeout + pg_sleep,
+    // not a real wall-clock race, matching this file's own top-of-file
+    // note that timing-dependent paths are reasoned about rather than
+    // asserted against real elapsed time), proving both that the bug is
+    // real without the savepoint and that the savepoint recovers from it.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Without a savepoint: a canceled statement aborts the transaction,
+      // and even a trivial subsequent query fails with 25P02.
+      await client.query('SET LOCAL statement_timeout = 50');
+      await expect(client.query('SELECT pg_sleep(0.5)')).rejects.toMatchObject({ code: '57014' });
+      await expect(client.query('SELECT 1')).rejects.toMatchObject({ code: '25P02' });
+
+      await client.query('ROLLBACK');
+      await client.query('BEGIN');
+
+      // With a savepoint taken before the optional query, rolling back to
+      // it on cancellation un-aborts the transaction and later queries
+      // succeed normally — the pattern render-roadmap.ts now uses.
+      await client.query('SAVEPOINT max_item_updated_at');
+      await client.query('SET LOCAL statement_timeout = 50');
+      await expect(client.query('SELECT pg_sleep(0.5)')).rejects.toMatchObject({ code: '57014' });
+      await client.query('ROLLBACK TO SAVEPOINT max_item_updated_at');
+      const recovered = await client.query('SELECT 1 AS one');
+      expect(recovered.rows[0]).toEqual({ one: 1 });
+
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
   it('positive: mermaid truncation notice is a %% comment, not a markdown blockquote (valid Mermaid syntax)', async () => {
     const projectId = await makeProject();
     for (let i = 0; i < 3; i++) {

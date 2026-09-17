@@ -49,7 +49,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
 import { renderRoadmapInputSchema, type RenderRoadmapInput } from '../../schemas/tools.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { getTrackSummariesForProject, getTrackDependencyEdges } from '../../db/queries/tracks.js';
+import {
+  getTrackSummariesForProject,
+  getTrackDependencyEdges,
+  getMaxItemUpdatedAtByTrackIds,
+} from '../../db/queries/tracks.js';
 import { listItemsByTrackCapped } from '../../db/queries/items.js';
 import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
@@ -160,12 +164,63 @@ export async function renderRoadmapService(
 
     const candidateTracks = orderedTracks.slice(0, config.roadmapTrackCap);
 
+    // Full-item-set timestamp fold for the "_Generated" line (ROAD-08/
+    // ROAD-12) — Markdown output only, and scoped to candidateTracks (the
+    // tracks that will actually make it into this render, i.e. after
+    // config.roadmapTrackCap is applied above), not every track in the
+    // project. Mermaid never renders this timestamp at all, and
+    // kt_get_next_steps doesn't use getTrackSummariesForProject's
+    // updated_at either, so both skip this aggregate entirely (PR #16/#19
+    // review, Codex finding databaseId 4032195046). Scoping to
+    // candidateTracks rather than the whole project (PR #19 review, Codex
+    // finding databaseId 4032271350) matters because this runs before the
+    // per-track loop's own time-budget check below: an unscoped aggregate
+    // against a project with a large completed item history could burn
+    // most of the remaining budget on tracks beyond roadmapTrackCap that
+    // will never even be rendered, leaving nothing for the loop to fetch
+    // even the first candidate track's items with.
+    let maxItemUpdatedAtByTrack = new Map<string, Date>();
+    if (input.format !== 'mermaid' && !timedOutBeforeListing && candidateTracks.length > 0) {
+      // SAVEPOINT, not just a try/catch on its own: withReadSnapshot holds
+      // one open transaction for this whole call, and a statement canceled
+      // by statement_timeout leaves that transaction *aborted* — every
+      // later statement on it fails with 25P02 ("current transaction is
+      // aborted") until something rolls it back, savepoint or otherwise
+      // (PR #16/#19 review, Codex finding databaseId 4032238523: swallowing
+      // 57014 here without this would silently break every per-track query
+      // in the loop below into a 500, defeating this file's whole "never
+      // turn a large project into a hard failure" point for exactly the
+      // slow-aggregate case this block exists to tolerate).
+      await client.query('SAVEPOINT max_item_updated_at');
+      try {
+        await setRemainingStatementTimeout(client, startedAt, timeBudgetMs);
+        maxItemUpdatedAtByTrack = await getMaxItemUpdatedAtByTrackIds(
+          client,
+          candidateTracks.map((t) => t.id),
+        );
+        await client.query('RELEASE SAVEPOINT max_item_updated_at');
+      } catch (error) {
+        if (!isQueryCanceled(error)) throw error;
+        // Budget blown fetching item timestamps — roll back to the
+        // savepoint (un-aborts the transaction) and degrade to folding
+        // only each track's own updated_at (and, below, each capped
+        // item's) rather than failing the render; this can only make
+        // "_Generated" slightly stale, never move it backwards or wrong.
+        await client.query('ROLLBACK TO SAVEPOINT max_item_updated_at');
+      }
+    }
+
     const itemsByTrackId = new Map<string, RoadmapItem[]>();
     const includedTracks: typeof candidateTracks = [];
     let itemCapHit = false;
 
     for (const track of candidateTracks) {
-      if (track.updated_at > latestUpdatedAt) latestUpdatedAt = track.updated_at;
+      const maxItemUpdatedAt = maxItemUpdatedAtByTrack.get(track.id);
+      const trackUpdatedAt =
+        maxItemUpdatedAt && maxItemUpdatedAt > track.updated_at
+          ? maxItemUpdatedAt
+          : track.updated_at;
+      if (trackUpdatedAt > latestUpdatedAt) latestUpdatedAt = trackUpdatedAt;
       // Checked before every per-track fetch (including the first) —
       // see this file's top-of-file comment for why this, not a
       // Promise.race, is the only place a time budget can mostly bite;
