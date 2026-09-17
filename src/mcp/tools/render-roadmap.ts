@@ -161,15 +161,29 @@ export async function renderRoadmapService(
     // #16/#19 review, Codex finding databaseId 4032195046).
     let maxItemUpdatedAtByTrack = new Map<string, Date>();
     if (input.format !== 'mermaid' && !timedOutBeforeListing) {
+      // SAVEPOINT, not just a try/catch on its own: withReadSnapshot holds
+      // one open transaction for this whole call, and a statement canceled
+      // by statement_timeout leaves that transaction *aborted* — every
+      // later statement on it fails with 25P02 ("current transaction is
+      // aborted") until something rolls it back, savepoint or otherwise
+      // (PR #16/#19 review, Codex finding databaseId 4032238523: swallowing
+      // 57014 here without this would silently break every per-track query
+      // in the loop below into a 500, defeating this file's whole "never
+      // turn a large project into a hard failure" point for exactly the
+      // slow-aggregate case this block exists to tolerate).
+      await client.query('SAVEPOINT max_item_updated_at');
       try {
         await setRemainingStatementTimeout(client, startedAt, timeBudgetMs);
         maxItemUpdatedAtByTrack = await getMaxItemUpdatedAtByProject(client, input.project_id);
+        await client.query('RELEASE SAVEPOINT max_item_updated_at');
       } catch (error) {
         if (!isQueryCanceled(error)) throw error;
-        // Budget blown fetching item timestamps — degrade to folding only
-        // each track's own updated_at (and, below, each capped item's)
-        // rather than failing the render; this can only make
+        // Budget blown fetching item timestamps — roll back to the
+        // savepoint (un-aborts the transaction) and degrade to folding
+        // only each track's own updated_at (and, below, each capped
+        // item's) rather than failing the render; this can only make
         // "_Generated" slightly stale, never move it backwards or wrong.
+        await client.query('ROLLBACK TO SAVEPOINT max_item_updated_at');
       }
     }
 

@@ -275,6 +275,47 @@ describe('kt_render_roadmap', () => {
     );
   });
 
+  it('negative (PR #16/#19 review, Codex re-review): a canceled optional aggregate must not abort the whole read-snapshot transaction', async () => {
+    // getMaxItemUpdatedAtByProject in render-roadmap.ts is wrapped in a
+    // SAVEPOINT specifically because a statement canceled by
+    // statement_timeout (SQLSTATE 57014) leaves the *whole* surrounding
+    // transaction aborted, not just that one statement — every later
+    // query on the same client then fails with 25P02 until something
+    // rolls it back. This test exercises that exact Postgres mechanism
+    // directly (deterministic via a tiny statement_timeout + pg_sleep,
+    // not a real wall-clock race, matching this file's own top-of-file
+    // note that timing-dependent paths are reasoned about rather than
+    // asserted against real elapsed time), proving both that the bug is
+    // real without the savepoint and that the savepoint recovers from it.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Without a savepoint: a canceled statement aborts the transaction,
+      // and even a trivial subsequent query fails with 25P02.
+      await client.query('SET LOCAL statement_timeout = 50');
+      await expect(client.query('SELECT pg_sleep(0.5)')).rejects.toMatchObject({ code: '57014' });
+      await expect(client.query('SELECT 1')).rejects.toMatchObject({ code: '25P02' });
+
+      await client.query('ROLLBACK');
+      await client.query('BEGIN');
+
+      // With a savepoint taken before the optional query, rolling back to
+      // it on cancellation un-aborts the transaction and later queries
+      // succeed normally — the pattern render-roadmap.ts now uses.
+      await client.query('SAVEPOINT max_item_updated_at');
+      await client.query('SET LOCAL statement_timeout = 50');
+      await expect(client.query('SELECT pg_sleep(0.5)')).rejects.toMatchObject({ code: '57014' });
+      await client.query('ROLLBACK TO SAVEPOINT max_item_updated_at');
+      const recovered = await client.query('SELECT 1 AS one');
+      expect(recovered.rows[0]).toEqual({ one: 1 });
+
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
   it('positive: mermaid truncation notice is a %% comment, not a markdown blockquote (valid Mermaid syntax)', async () => {
     const projectId = await makeProject();
     for (let i = 0; i < 3; i++) {
