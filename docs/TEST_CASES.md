@@ -409,6 +409,7 @@ section tests the *detection logic itself*, which is triggered both inline by
 | ROAD-09 | kt_render_roadmap | Positive (determinism) | No DB changes between calls | Call `kt_render_roadmap` twice in a row with identical arguments | Both calls return **byte-identical** `content` |
 | ROAD-10 | kt_render_roadmap | Negative (explicit no-write assertion) | Full DB snapshot taken pre-call | Call `kt_render_roadmap` | Post-call snapshot is byte-identical to pre-call snapshot — no event logged, no `updated_at` touched, no drift flag created as a side effect of rendering |
 | ROAD-11 | kt_render_roadmap | Negative | Project has adapter credential configured | Valid call | `content` contains no adapter credential, even if the roadmap text references the source repo/linear project |
+| ROAD-12 | kt_render_roadmap | Positive (exact reflection, PR #16 review Codex re-review) | Track has more items than `roadmapItemPerTrackCap`; the two capped/displayed items are already `done`, the item beyond the cap is not | Update the item beyond the cap to `done` (flips the track's derived `status`), render again | Rendered `status` text changes; `_Generated` timestamp also moves forward — a status change caused by an item beyond the display cap must still bump the timestamp, per ROAD-08 |
 
 ---
 

@@ -76,7 +76,21 @@ export interface TrackSummary {
   /** Used by render-roadmap.ts to derive a deterministic "Generated at"
    * timestamp (TRD TEST_CASES.md ROAD-09: two calls with no DB changes
    * must return byte-identical content) — a live `new Date()` at render
-   * time would fail that on the very next call. */
+   * time would fail that on the very next call.
+   *
+   * This is `GREATEST(tracks.updated_at, MAX(items.updated_at))`, not
+   * just the track row's own timestamp (PR #16 review, Codex finding
+   * databaseId 4021126237): `status`/`own_done`/`effective_done` above
+   * are derived from *every* item on the track, but
+   * kt_render_roadmap only renders the first
+   * `config.roadmapItemPerTrackCap` of them. Folding in only the
+   * displayed items' timestamps meant a status flip caused by an item
+   * beyond that cap (e.g. the track's last remaining item going
+   * `done`) changed the rendered status text without moving the
+   * "_Generated" timestamp — a real violation of ROAD-08's "differs
+   * exactly where the DB differs and nowhere else". Computing the max
+   * over *all* items in this same project-scoped query (not a second,
+   * per-track round trip) closes that gap at no extra query cost. */
   updated_at: Date;
 }
 
@@ -101,10 +115,14 @@ export async function getTrackSummariesForProject(
   projectId: string,
 ): Promise<TrackSummary[]> {
   const result = await db.query<TrackSummary>(
-    `SELECT t.id, t.title, tr.status, tr.own_done, tr.effective_done, t.updated_at
+    `SELECT
+       t.id, t.title, tr.status, tr.own_done, tr.effective_done,
+       GREATEST(t.updated_at, COALESCE(MAX(i.updated_at), t.updated_at)) AS updated_at
      FROM tracks t
      JOIN track_readiness tr ON tr.id = t.id
+     LEFT JOIN items i ON i.track_id = t.id
      WHERE t.project_id = $1
+     GROUP BY t.id, t.title, tr.status, tr.own_done, tr.effective_done, t.updated_at
      ORDER BY t.created_at ASC, t.id ASC`,
     [projectId],
   );
