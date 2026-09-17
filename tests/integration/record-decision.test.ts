@@ -304,17 +304,20 @@ describe('kt_record_decision', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  describe('migration 007 (PR #16 escalated finding 2): decisions_resolves_same_track_fk', () => {
-    // kt_record_decision itself can never produce a cross-track
-    // resolves_decision_id (expected_pivot_decision_id is always looked up
-    // scoped to input.track_id — see record-decision.ts), so this
-    // constraint is unreachable through the service layer by construction.
-    // These tests go straight at the database with raw SQL, the way a
-    // future writer, a migration, or a psql session could, which is
-    // exactly the gap the frontier-panel review (project doc
-    // "PR #16 escalated findings — frontier panel review", finding 2)
-    // flagged: nothing below the application layer enforced this before
-    // migration 007.
+  describe('migrations 007 + 008 (PR #16 escalated findings 1 & 2): resolves_decision_id / pivot_decision_id integrity', () => {
+    // kt_record_decision itself can never produce a cross-track or
+    // wrong-effect resolves_decision_id (expected_pivot_decision_id is
+    // always looked up scoped to input.track_id — see record-decision.ts),
+    // so these constraints are unreachable through the service layer by
+    // construction. These tests go straight at the database with raw SQL,
+    // the way a future writer, a migration, or a psql session could,
+    // which is exactly the gap the frontier-panel review (project doc
+    // "PR #16 escalated findings — frontier panel review") flagged.
+    //
+    // Migration 007 added a same-track-only FK (decisions_resolves_same_track_fk);
+    // migration 008 supersedes it with a same-track-AND-open_pivot FK
+    // (decisions_resolves_open_pivot_fk) — a strict superset — so every
+    // assertion below targets the current (post-008) constraint name.
 
     it('negative: a raw INSERT with resolves_decision_id pointing at a decision on a different track is rejected by the database', async () => {
       const trackA = await makeProjectAndTrack();
@@ -337,11 +340,95 @@ describe('kt_record_decision', () => {
         ),
       ).rejects.toMatchObject({
         code: '23503', // foreign_key_violation
-        constraint: 'decisions_resolves_same_track_fk',
+        constraint: 'decisions_resolves_open_pivot_fk',
       });
     });
 
-    it('positive: a raw INSERT with resolves_decision_id pointing at a decision on the same track is accepted', async () => {
+    it('negative (migration 008, finding 2 full fix): a raw INSERT resolving a same-track decision that is NOT an open_pivot is rejected', async () => {
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      // A same-track plain 'note' decision — same-track FK alone (007)
+      // would have let this through; only the effect-typed FK (008) can
+      // tell it apart from a real open_pivot.
+      const note = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Just a note',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'note',
+      });
+
+      await expect(
+        pool.query(
+          `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+           VALUES ($1, $2, 'Resolve a non-pivot', 'R', 'C', 'resolve_pivot', $3)`,
+          [projectId, trackId, note.decision_id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23503',
+        constraint: 'decisions_resolves_open_pivot_fk',
+      });
+    });
+
+    it('negative (migration 008, finding 2 full fix): a raw INSERT with resolves_decision_id set but a NULL track_id is rejected', async () => {
+      // Astra's original concern: under plain MATCH SIMPLE, a resolve_pivot
+      // row with a NULL track_id would bypass the composite FK entirely.
+      // decisions_track_id_required_for_pivots (a CHECK, not the FK) is
+      // what actually closes this.
+      const { projectId, trackId } = await makeProjectAndTrack();
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      await expect(
+        pool.query(
+          `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect, resolves_decision_id)
+           VALUES ($1, NULL, 'Resolve with no track', 'R', 'C', 'resolve_pivot', $2)`,
+          [projectId, opened.decision_id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23514', // check_violation, raised by trg_decisions_track_id_required_for_pivots
+        message: expect.stringContaining('requires a non-NULL track_id'),
+      });
+    });
+
+    it('positive (Codex review of migration 008): hard-deleting a track that has an open_pivot decision still succeeds, preserving the decision with track_id set to NULL', async () => {
+      // A BEFORE INSERT-only trigger, not a CHECK constraint, backs
+      // trg_decisions_track_id_required_for_pivots specifically so this
+      // keeps working: docs/DATABASE_SCHEMA.md documents
+      // `decisions.track_id ... ON DELETE SET NULL` as the mechanism a
+      // hard project delete / legal-erasure operation relies on to
+      // preserve decision history after the track itself is gone. A CHECK
+      // constraint (the migration's first draft, before this review
+      // caught it) would re-validate on that same SET NULL and reject it
+      // for any decision that ever recorded an open_pivot/resolve_pivot.
+      const { trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: (await pool.query('SELECT project_id FROM tracks WHERE id = $1', [trackId]))
+          .rows[0].project_id,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      await pool.query('DELETE FROM tracks WHERE id = $1', [trackId]);
+
+      const row = await pool.query('SELECT track_id, effect FROM decisions WHERE id = $1', [
+        opened.decision_id,
+      ]);
+      expect(row.rows).toMatchObject([{ track_id: null, effect: 'open_pivot' }]);
+    });
+
+    it('positive: a raw INSERT with resolves_decision_id pointing at an open_pivot decision on the same track is accepted', async () => {
       const { projectId, trackId } = await makeProjectAndTrack();
 
       const opened = await recordDecisionService(pool, config, {
@@ -362,5 +449,138 @@ describe('kt_record_decision', () => {
 
       expect(result.rows).toHaveLength(1);
     });
+
+    it('negative (migration 008, finding 1): a raw UPDATE pointing tracks.pivot_decision_id at a same-track decision that is NOT an open_pivot is rejected', async () => {
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const note = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Just a note',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'note',
+      });
+
+      await expect(
+        pool.query('UPDATE tracks SET pivot_decision_id = $1 WHERE id = $2', [
+          note.decision_id,
+          trackId,
+        ]),
+      ).rejects.toMatchObject({
+        code: '23503',
+        constraint: 'tracks_pivot_decision_fk',
+      });
+    });
+
+    // trg_decisions_track_id_required_for_pivots (CodeRabbit re-review of
+    // migration 008): the guard originally only fired BEFORE INSERT, so a
+    // raw UPDATE could flip an existing trackless decision's effect/
+    // resolves_decision_id straight past it — the composite FK's MATCH
+    // SIMPLE skips validation on a NULL track_id the same way it does on
+    // INSERT. Scoped to `UPDATE OF effect, resolves_decision_id` so the
+    // ON DELETE SET NULL track-hard-delete path above (which only ever
+    // touches track_id) still doesn't re-trigger this guard.
+    it('negative (migration 008, CodeRabbit re-review): a raw UPDATE flipping a trackless note to open_pivot is rejected', async () => {
+      const { projectId } = await makeProjectAndTrack();
+
+      const trackless = await pool.query(
+        `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect)
+         VALUES ($1, NULL, 'Trackless note', 'R', 'C', 'note')
+         RETURNING id`,
+        [projectId],
+      );
+
+      await expect(
+        pool.query(`UPDATE decisions SET effect = 'open_pivot' WHERE id = $1`, [
+          trackless.rows[0].id,
+        ]),
+      ).rejects.toMatchObject({
+        code: '23514', // check_violation, raised by trg_decisions_track_id_required_for_pivots
+        message: expect.stringContaining('requires a non-NULL track_id'),
+      });
+    });
+
+    it('negative (migration 008, CodeRabbit re-review): a raw UPDATE setting effect=resolve_pivot + resolves_decision_id together on a trackless decision is rejected', async () => {
+      // Setting resolves_decision_id alone (without also flipping effect to
+      // 'resolve_pivot' in the same statement) would instead trip the
+      // unrelated decisions_resolves_requires_effect CHECK first — this
+      // sets both together, the only way a writer can actually reach
+      // trg_decisions_track_id_required_for_pivots's UPDATE OF
+      // resolves_decision_id path.
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+
+      const trackless = await pool.query(
+        `INSERT INTO decisions (project_id, track_id, title, rationale, what_changed, effect)
+         VALUES ($1, NULL, 'Trackless note', 'R', 'C', 'note')
+         RETURNING id`,
+        [projectId],
+      );
+
+      await expect(
+        pool.query(
+          `UPDATE decisions SET effect = 'resolve_pivot', resolves_decision_id = $1 WHERE id = $2`,
+          [opened.decision_id, trackless.rows[0].id],
+        ),
+      ).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining('requires a non-NULL track_id'),
+      });
+    });
+
+    it('negative (migration 008, Codex re-review): a raw UPDATE directly nulling track_id on a live (but no-longer-active) pivot decision is rejected', async () => {
+      // tracks_pivot_decision_fk only protects a decision while it's still
+      // the track's *current* pivot (tracks.pivot_decision_id points at
+      // it) — resolving a pivot clears that pointer (src/db/queries/tracks.ts,
+      // resolvePivot), so an already-resolved open_pivot decision has no
+      // other guard against a direct track_id-nulling UPDATE. This is the
+      // gap trg_decisions_track_id_required_for_pivots now also closes by
+      // including track_id in its UPDATE OF list.
+      const { projectId, trackId } = await makeProjectAndTrack();
+
+      const opened = await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Pivot',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'open_pivot',
+      });
+      await recordDecisionService(pool, config, {
+        project_id: projectId,
+        track_id: trackId,
+        title: 'Resolve',
+        rationale: 'R',
+        what_changed: 'C',
+        effect: 'resolve_pivot',
+        expected_pivot_decision_id: opened.decision_id,
+      });
+
+      await expect(
+        pool.query('UPDATE decisions SET track_id = NULL WHERE id = $1', [opened.decision_id]),
+      ).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining('requires a non-NULL track_id'),
+      });
+    });
+
+    // The companion, cascade-allowed side of the test just above — that
+    // trg_decisions_track_id_required_for_pivots's new track_id coverage
+    // doesn't also start rejecting the real track_id-only UPDATE a hard
+    // track delete's ON DELETE SET NULL performs — is already covered by
+    // "hard-deleting a track that has an open_pivot decision still
+    // succeeds" earlier in this describe block (re-verified against a live
+    // database after this trigger's scope was widened): the function tells
+    // the two apart by checking, only on UPDATE, whether OLD.track_id's row
+    // in `tracks` still exists — gone means the cascade already deleted it.
   });
 });
