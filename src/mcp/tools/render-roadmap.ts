@@ -49,7 +49,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
 import { renderRoadmapInputSchema, type RenderRoadmapInput } from '../../schemas/tools.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { getTrackSummariesForProject, getTrackDependencyEdges } from '../../db/queries/tracks.js';
+import {
+  getTrackSummariesForProject,
+  getTrackDependencyEdges,
+  getMaxItemUpdatedAtByProject,
+} from '../../db/queries/tracks.js';
 import { listItemsByTrackCapped } from '../../db/queries/items.js';
 import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
@@ -149,6 +153,26 @@ export async function renderRoadmapService(
       timedOutBeforeListing = true;
     }
 
+    // Full-item-set timestamp fold for the "_Generated" line (ROAD-08/
+    // ROAD-12) — Markdown output only. Mermaid never renders this
+    // timestamp at all, and kt_get_next_steps doesn't use
+    // getTrackSummariesForProject's updated_at either, so this extra
+    // project-scoped aggregate query is skipped entirely for both (PR
+    // #16/#19 review, Codex finding databaseId 4032195046).
+    let maxItemUpdatedAtByTrack = new Map<string, Date>();
+    if (input.format !== 'mermaid' && !timedOutBeforeListing) {
+      try {
+        await setRemainingStatementTimeout(client, startedAt, timeBudgetMs);
+        maxItemUpdatedAtByTrack = await getMaxItemUpdatedAtByProject(client, input.project_id);
+      } catch (error) {
+        if (!isQueryCanceled(error)) throw error;
+        // Budget blown fetching item timestamps — degrade to folding only
+        // each track's own updated_at (and, below, each capped item's)
+        // rather than failing the render; this can only make
+        // "_Generated" slightly stale, never move it backwards or wrong.
+      }
+    }
+
     const orderedTrackIds = topoSort(
       allTracks.map((t) => t.id),
       trackEdges,
@@ -165,7 +189,12 @@ export async function renderRoadmapService(
     let itemCapHit = false;
 
     for (const track of candidateTracks) {
-      if (track.updated_at > latestUpdatedAt) latestUpdatedAt = track.updated_at;
+      const maxItemUpdatedAt = maxItemUpdatedAtByTrack.get(track.id);
+      const trackUpdatedAt =
+        maxItemUpdatedAt && maxItemUpdatedAt > track.updated_at
+          ? maxItemUpdatedAt
+          : track.updated_at;
+      if (trackUpdatedAt > latestUpdatedAt) latestUpdatedAt = trackUpdatedAt;
       // Checked before every per-track fetch (including the first) —
       // see this file's top-of-file comment for why this, not a
       // Promise.race, is the only place a time budget can mostly bite;
