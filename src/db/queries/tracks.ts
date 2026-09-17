@@ -76,7 +76,7 @@ export interface TrackSummary {
   /** The track row's own `updated_at` only — does NOT reflect its items.
    * kt_render_roadmap's Markdown path needs the full item set's timestamps
    * too (for its "_Generated" line) and folds those in itself via
-   * `getMaxItemUpdatedAtByProject` below, rather than this function always
+   * `getMaxItemUpdatedAtByTrackIds` below, rather than this function always
    * paying that cost for every caller (PR #16/#19 review, Codex finding
    * databaseId 4032195046: kt_get_next_steps and the Mermaid render path
    * both discard/never emit this timestamp, so joining+aggregating every
@@ -117,11 +117,11 @@ export async function getTrackSummariesForProject(
   return result.rows;
 }
 
-/** `track_id -> MAX(items.updated_at)` for every track in a project that
- * has at least one item — one project-scoped aggregate query, not a
- * per-track round trip. Used only by kt_render_roadmap's Markdown path
- * (PR #16/#19 review, Codex finding databaseId 4032195046) to fold items
- * beyond `config.roadmapItemPerTrackCap` into the rendered "_Generated"
+/** `track_id -> MAX(items.updated_at)` for the given tracks (only, not
+ * every track in the project) — one aggregate query, not a per-track
+ * round trip. Used only by kt_render_roadmap's Markdown path (PR #16/#19
+ * review, Codex finding databaseId 4032195046) to fold items beyond
+ * `config.roadmapItemPerTrackCap` into the rendered "_Generated"
  * timestamp: `track_readiness.status`/`own_done` are derived from *every*
  * item on a track, but kt_render_roadmap only displays the first
  * `roadmapItemPerTrackCap` of them, so a status flip caused by an
@@ -129,18 +129,27 @@ export async function getTrackSummariesForProject(
  * ROAD-08/ROAD-12). Deliberately a separate function/query from
  * getTrackSummariesForProject rather than folded into it, so
  * kt_get_next_steps and the Mermaid render path (neither of which uses
- * this timestamp) don't pay for it. */
-export async function getMaxItemUpdatedAtByProject(
+ * this timestamp) don't pay for it.
+ *
+ * Takes explicit `trackIds` (render-roadmap.ts passes only its
+ * already-`roadmapTrackCap`-limited `candidateTracks`) rather than a
+ * `projectId` (PR #19 review, Codex finding databaseId 4032271350): an
+ * unscoped project-wide aggregate would spend time-budget on tracks
+ * beyond the cap that the render won't even include, at the same point
+ * in the call where every other query is already carefully time-boxed to
+ * what will actually be rendered. Returns an empty map without querying
+ * when `trackIds` is empty. */
+export async function getMaxItemUpdatedAtByTrackIds(
   db: Queryable,
-  projectId: string,
+  trackIds: string[],
 ): Promise<Map<string, Date>> {
+  if (trackIds.length === 0) return new Map();
   const result = await db.query<{ track_id: string; max_updated_at: Date }>(
-    `SELECT i.track_id, MAX(i.updated_at) AS max_updated_at
-     FROM items i
-     JOIN tracks t ON t.id = i.track_id
-     WHERE t.project_id = $1
-     GROUP BY i.track_id`,
-    [projectId],
+    `SELECT track_id, MAX(updated_at) AS max_updated_at
+     FROM items
+     WHERE track_id = ANY($1::uuid[])
+     GROUP BY track_id`,
+    [trackIds],
   );
   return new Map(result.rows.map((row) => [row.track_id, row.max_updated_at]));
 }

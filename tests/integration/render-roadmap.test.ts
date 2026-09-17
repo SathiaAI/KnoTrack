@@ -276,7 +276,7 @@ describe('kt_render_roadmap', () => {
   });
 
   it('negative (PR #16/#19 review, Codex re-review): a canceled optional aggregate must not abort the whole read-snapshot transaction', async () => {
-    // getMaxItemUpdatedAtByProject in render-roadmap.ts is wrapped in a
+    // getMaxItemUpdatedAtByTrackIds in render-roadmap.ts is wrapped in a
     // SAVEPOINT specifically because a statement canceled by
     // statement_timeout (SQLSTATE 57014) leaves the *whole* surrounding
     // transaction aborted, not just that one statement — every later

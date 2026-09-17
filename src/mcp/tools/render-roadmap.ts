@@ -52,7 +52,7 @@ import { findActiveProjectById } from '../../db/queries/projects.js';
 import {
   getTrackSummariesForProject,
   getTrackDependencyEdges,
-  getMaxItemUpdatedAtByProject,
+  getMaxItemUpdatedAtByTrackIds,
 } from '../../db/queries/tracks.js';
 import { listItemsByTrackCapped } from '../../db/queries/items.js';
 import { withReadSnapshot } from '../../db/tx.js';
@@ -153,14 +153,34 @@ export async function renderRoadmapService(
       timedOutBeforeListing = true;
     }
 
+    const orderedTrackIds = topoSort(
+      allTracks.map((t) => t.id),
+      trackEdges,
+    );
+    const trackById = new Map(allTracks.map((t) => [t.id, t]));
+    const orderedTracks = orderedTrackIds
+      .map((id) => trackById.get(id))
+      .filter((t): t is (typeof allTracks)[number] => t !== undefined);
+
+    const candidateTracks = orderedTracks.slice(0, config.roadmapTrackCap);
+
     // Full-item-set timestamp fold for the "_Generated" line (ROAD-08/
-    // ROAD-12) — Markdown output only. Mermaid never renders this
-    // timestamp at all, and kt_get_next_steps doesn't use
-    // getTrackSummariesForProject's updated_at either, so this extra
-    // project-scoped aggregate query is skipped entirely for both (PR
-    // #16/#19 review, Codex finding databaseId 4032195046).
+    // ROAD-12) — Markdown output only, and scoped to candidateTracks (the
+    // tracks that will actually make it into this render, i.e. after
+    // config.roadmapTrackCap is applied above), not every track in the
+    // project. Mermaid never renders this timestamp at all, and
+    // kt_get_next_steps doesn't use getTrackSummariesForProject's
+    // updated_at either, so both skip this aggregate entirely (PR #16/#19
+    // review, Codex finding databaseId 4032195046). Scoping to
+    // candidateTracks rather than the whole project (PR #19 review, Codex
+    // finding databaseId 4032271350) matters because this runs before the
+    // per-track loop's own time-budget check below: an unscoped aggregate
+    // against a project with a large completed item history could burn
+    // most of the remaining budget on tracks beyond roadmapTrackCap that
+    // will never even be rendered, leaving nothing for the loop to fetch
+    // even the first candidate track's items with.
     let maxItemUpdatedAtByTrack = new Map<string, Date>();
-    if (input.format !== 'mermaid' && !timedOutBeforeListing) {
+    if (input.format !== 'mermaid' && !timedOutBeforeListing && candidateTracks.length > 0) {
       // SAVEPOINT, not just a try/catch on its own: withReadSnapshot holds
       // one open transaction for this whole call, and a statement canceled
       // by statement_timeout leaves that transaction *aborted* — every
@@ -174,7 +194,10 @@ export async function renderRoadmapService(
       await client.query('SAVEPOINT max_item_updated_at');
       try {
         await setRemainingStatementTimeout(client, startedAt, timeBudgetMs);
-        maxItemUpdatedAtByTrack = await getMaxItemUpdatedAtByProject(client, input.project_id);
+        maxItemUpdatedAtByTrack = await getMaxItemUpdatedAtByTrackIds(
+          client,
+          candidateTracks.map((t) => t.id),
+        );
         await client.query('RELEASE SAVEPOINT max_item_updated_at');
       } catch (error) {
         if (!isQueryCanceled(error)) throw error;
@@ -186,17 +209,6 @@ export async function renderRoadmapService(
         await client.query('ROLLBACK TO SAVEPOINT max_item_updated_at');
       }
     }
-
-    const orderedTrackIds = topoSort(
-      allTracks.map((t) => t.id),
-      trackEdges,
-    );
-    const trackById = new Map(allTracks.map((t) => [t.id, t]));
-    const orderedTracks = orderedTrackIds
-      .map((id) => trackById.get(id))
-      .filter((t): t is (typeof allTracks)[number] => t !== undefined);
-
-    const candidateTracks = orderedTracks.slice(0, config.roadmapTrackCap);
 
     const itemsByTrackId = new Map<string, RoadmapItem[]>();
     const includedTracks: typeof candidateTracks = [];
