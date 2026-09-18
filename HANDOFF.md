@@ -5,9 +5,12 @@
 > (2) Do not touch anything in "Do Not Touch" unless the user explicitly asks.
 > (3) Ground truth is the actual project state (files, running system), not this document —
 > if they disagree, the real state wins and you flag the discrepancy.
-> (4) `frontier_gate.py` was not reachable in the session that wrote this handoff (no
->     device/ENV mount present) — the `handoff-resume` Jev check could not be run. Fall back
->     to manually diffing this file's claims against real repo state before acting.
+> (4) `frontier_gate.py` is reachable via `device_bash` and confirmed working (`doctor`
+>     verdict OK, checked 2026-09-18) — an earlier draft of this file wrongly claimed it was
+>     unreachable; that was a checking error, not a real gap (see Gotchas). Run
+>     `device_bash: python3 $HOME/mnt/ENV/frontier_gate.py handoff-resume HANDOFF.md
+>     <real-state.txt> [HANDOFF-archive-*.md]` and put every line of `first_message_should_flag`
+>     in your first message.
 
 ## Mission
 
@@ -198,12 +201,27 @@ adapters) is the next real feature track.
   session — don't hardcode either). A review request that seems to hang for several minutes,
   then comes back with "Review rate limited" instead of an actual review, is this — not a bug,
   not something to keep retrying immediately.
-- **`frontier_gate.py` / the `$HOME/mnt/ENV` path was not reachable in this sandbox session**
-  when writing this handoff (no remote-devices/device-bridge mount present at handoff time,
-  unclear if that's session-specific or permanent) — the `handoff-lint`/`handoff-resume` Jev
-  checks described by the `session-handshake` skill could not be run. This file was quality-
-  checked manually instead. If a future session has the mount, it's worth re-running
-  `handoff-lint` against this file once as a sanity check.
+- **`frontier_gate.py` is reachable via `device_bash` whenever the Claude desktop app is
+  connected with `F:\ENV` as a connected folder — confirmed working** (`doctor` verdict OK,
+  ~336ms turnaround, model `typesafe/jev-1.13-20260917`, checked 2026-09-18 via the
+  `check-jev` skill). **This file's own first draft wrongly claimed it was "unreachable."**
+  That was a checking error, not a real gap: the check that produced that claim ran
+  `find`/`ls` against the **cloud sandbox's own local filesystem** (the plain `Bash` tool),
+  which of course never has `frontier_gate.py` — it lives only on Paul's Windows machine. The
+  device bridge (`mcp__remote-devices__*` tools, including `device_bash`) was actually live
+  and in active use for the entire session that wrote this claim — it's what pushed PR #21
+  and created it. **Lesson: to check whether the Jev gate is reachable, always run
+  `device_bash: python3 $HOME/mnt/ENV/frontier_gate.py doctor` directly — never infer
+  unavailability from a local sandbox filesystem search** (`find`, `ls`, etc. in the plain
+  `Bash` tool only ever sees the cloud container, never the connected device).
+- **`handoff-lint` run against this file (2026-09-18, after the above correction) came back
+  `pass: false`** — no secrets, no missing sections, but `next_action_unambiguous` (0.52),
+  `resume_command_client_neutral` (0.59), and `standalone` (0.63) all scored below the 0.7
+  bar. Root cause: the "Exact next action" and "Resume Command" sections both correctly end
+  by requiring a live decision from Paul (which of the two starting points he wants) rather
+  than being fully self-contained — honest given the real open question, not sloppiness, but
+  worth a tightening pass if a future session wants a clean lint result once Paul has
+  answered that question.
 - **PowerShell one-liners passed inline via `-Command` with embedded `$(...)` subexpressions
   inside a double-quoted string reliably break** ("Expressions are only allowed as the first
   element of a pipeline") when relayed through the device-bridge `start_process` tool. Always
