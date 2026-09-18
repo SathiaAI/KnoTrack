@@ -215,12 +215,6 @@ export async function renderRoadmapService(
     let itemCapHit = false;
 
     for (const track of candidateTracks) {
-      const maxItemUpdatedAt = maxItemUpdatedAtByTrack.get(track.id);
-      const trackUpdatedAt =
-        maxItemUpdatedAt && maxItemUpdatedAt > track.updated_at
-          ? maxItemUpdatedAt
-          : track.updated_at;
-      if (trackUpdatedAt > latestUpdatedAt) latestUpdatedAt = trackUpdatedAt;
       // Checked before every per-track fetch (including the first) —
       // see this file's top-of-file comment for why this, not a
       // Promise.race, is the only place a time budget can mostly bite;
@@ -237,6 +231,18 @@ export async function renderRoadmapService(
         if (!isQueryCanceled(error)) throw error;
         break;
       }
+      // Folded only now that this track is guaranteed to make it into
+      // `includedTracks` below — not earlier in the loop body, where a
+      // time-budget break or a canceled per-track query could drop the
+      // track from the render while its timestamp had already moved
+      // `latestUpdatedAt` forward (PR #19 review, Codex, post-round-4
+      // finding: a dropped track must not still affect `_Generated`).
+      const maxItemUpdatedAt = maxItemUpdatedAtByTrack.get(track.id);
+      const trackUpdatedAt =
+        maxItemUpdatedAt && maxItemUpdatedAt > track.updated_at
+          ? maxItemUpdatedAt
+          : track.updated_at;
+      if (trackUpdatedAt > latestUpdatedAt) latestUpdatedAt = trackUpdatedAt;
       if (rows.length > config.roadmapItemPerTrackCap) {
         itemCapHit = true;
       }
