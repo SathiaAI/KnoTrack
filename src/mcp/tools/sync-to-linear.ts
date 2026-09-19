@@ -161,15 +161,13 @@ export async function syncToLinearService(
       if (existing.content_hash === hash) return { kind: 'noop' };
       return { kind: 'update', row: existing };
     }
-    const operationId = randomUUID();
-    const claimed = await claimPendingLink(c, {
-      trackId: track.id,
-      adapterType: ADAPTER,
-      repoIdentity: teamId,
-      operationId,
-    });
-    if (claimed) return { kind: 'create', operationId };
-    return { kind: 'raced' };
+    // No link yet -> a create. We deliberately do NOT claim the pending row
+    // here: the Linear workflow-state read happens first (in createFresh), so a
+    // crash during that read cannot leave a wedged pending row for a create
+    // that was never attempted. The claim (INSERT ... ON CONFLICT DO NOTHING)
+    // still commits BEFORE the outbound mutation, preserving the durable
+    // creation-intent, and its ON CONFLICT is the cross-process race guard.
+    return { kind: 'create' };
   });
 
   const ctx: SyncCtx = {
@@ -192,15 +190,10 @@ export async function syncToLinearService(
         ok: false,
         error: `LINEAR_UNKNOWN_ERROR: this track is linked to an issue in Linear team ${decision.row.repo_identity}, but the adapter is now configured for team ${teamId}; refusing to update a different team`,
       };
-    case 'raced':
-      return {
-        ok: false,
-        error: 'LINEAR_UNKNOWN_ERROR: another sync for this track is in progress; retry shortly',
-      };
     case 'update':
       return updateExisting(ctx, decision.row);
     case 'create':
-      return createFresh(ctx, decision.operationId);
+      return createFresh(ctx);
     case 'pending':
       return recoverPending(ctx, decision.row);
   }
@@ -227,9 +220,8 @@ interface SyncCtx {
 type Decision =
   | { kind: 'noop' }
   | { kind: 'team_changed'; row: TrackExternalLinkRow }
-  | { kind: 'raced' }
   | { kind: 'update'; row: TrackExternalLinkRow }
-  | { kind: 'create'; operationId: string }
+  | { kind: 'create' }
   | { kind: 'pending'; row: TrackExternalLinkRow };
 
 async function okSynced(pool: Pool, trackId: string, syncedAt: Date): Promise<LinearSyncOutput> {
@@ -247,7 +239,14 @@ async function resolveState(
   mode: 'create' | 'update',
   issueId?: string,
 ): Promise<{ ok: true; stateId?: string } | { ok: false; error: string }> {
-  const needState = ctx.trackStatus === 'done' || ctx.stateConfig.openStateId !== undefined;
+  // Fetch states when a stateId might be set (done track, or an open_state_id
+  // reopen) OR when ANY override is configured — so a misconfigured
+  // done_state_id/open_state_id is validated and surfaced eagerly (Codex
+  // PR #25), not silently accepted until the track later becomes done.
+  const needState =
+    ctx.trackStatus === 'done' ||
+    ctx.stateConfig.openStateId !== undefined ||
+    ctx.stateConfig.doneStateId !== undefined;
   if (!needState) return { ok: true };
 
   const statesRes = await ctx.client.getWorkflowStates(ctx.teamId);
@@ -277,15 +276,31 @@ async function resolveState(
   return { ok: true, stateId: resolved.stateId };
 }
 
-async function createFresh(ctx: SyncCtx, operationId: string): Promise<LinearSyncOutput> {
+async function createFresh(ctx: SyncCtx): Promise<LinearSyncOutput> {
+  // Resolve the target workflow state BEFORE committing the durable pending
+  // intent. This Linear-only network read has no side effect, so a crash or a
+  // config/transport failure during it leaves NO pending row for a create that
+  // was never attempted (Codex PR #25) — no wedge, clean retry.
   const state = await resolveState(ctx, 'create');
-  if (!state.ok) {
-    // A definitive config/transport failure before the mutation -> no issue
-    // was created; clear the pending claim so the next attempt starts clean.
-    await withTransaction(ctx.pool, (c) =>
-      clearPendingLink(c, { trackId: ctx.trackId, adapterType: ADAPTER, operationId }),
-    );
-    return { ok: false, error: state.error };
+  if (!state.ok) return { ok: false, error: state.error };
+
+  // Claim the durable pending intent now, BEFORE the outbound mutation. The
+  // UNIQUE(track_id, adapter_type) ON CONFLICT DO NOTHING is the cross-process
+  // race guard: exactly one concurrent sync wins the claim.
+  const operationId = randomUUID();
+  const claimed = await withTransaction(ctx.pool, (c) =>
+    claimPendingLink(c, {
+      trackId: ctx.trackId,
+      adapterType: ADAPTER,
+      repoIdentity: ctx.teamId,
+      operationId,
+    }),
+  );
+  if (!claimed) {
+    return {
+      ok: false,
+      error: 'LINEAR_UNKNOWN_ERROR: another sync for this track is in progress; retry shortly',
+    };
   }
 
   const created = await ctx.client.createIssue(ctx.teamId, ctx.payload, state.stateId);

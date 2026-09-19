@@ -199,7 +199,7 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 **Output:**
 ```
 {
-  track: { track_id, title, status, pivot_decision_id, source_doc_ref, depends_on_track_ids, created_at },
+  track: { track_id, title, status, pivot_decision_id, source_doc_ref, depends_on_track_ids, github_issue_url, linear_issue_url, created_at },
   items: [ { item_id, title, status, sequence_position, depends_on_item_ids } ],
   dependency_graph: {
     nodes: [ { item_id, title, status } ],
@@ -210,6 +210,7 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 
 **Business rules / edge cases:**
 - `track_id` must belong to `project_id`; if it belongs to a different project or doesn't exist, `NOT_FOUND`.
+- `github_issue_url` / `linear_issue_url` are the URLs of the linked GitHub / Linear Issue this track is synced to (§4.13 / §4.14), or `null` when the track has no linked issue of that type. This is where "the sync tool records the issue URL on the track" is observable through the read contract.
 - **Track status is derived at read time, not a stored column (T2.16).** There is no `tracks.status` column. Every read of a track's status — this tool, `kt_list_tracks`, `kt_get_project_status`, `kt_render_roadmap` — selects from the `track_readiness` view, which computes `status` in this fixed order: an active pivot (`tracks.pivot_decision_id IS NOT NULL`) → `pivot_pending`; else any **direct** dependency not locally OK (that dependency's own `own_done` true and no active pivot — never that dependency's own `status`) → `blocked`; else the track itself `own_done` (≥1 item, all done-equivalent) → `done`; else `on_track`. No tool writes a track status value directly, and there is no tool analogous to `kt_update_item_status` for tracks. **This closes the gap this document used to flag as an open product problem (PR-review Finding 2): `kt_record_decision`'s `effect: "resolve_pivot"` (§4.9) is exactly the write path that moves a track back out of `pivot_pending`.** `blocked` still has no direct unblock tool — it clears automatically, at read time, once every direct dependency becomes locally OK, since it was never a stored value to unstick in the first place.
 - Because `status` only looks one hop deep, it can miss a problem further up the dependency chain: a track can read `status: "done"` while a dependency two-plus hops away is still broken. The separate `effective_done` boolean (`own_done` AND no active pivot AND every **transitive** dependency is `own_done` with no active pivot) is the safe-to-build-on signal — `own_done: true, effective_done: false` is a real, surfaced gap, not a bug. This tool's own output does not include `effective_done` (only `status` and `pivot_decision_id`); `effective_done` is what `kt_render_roadmap` (§4.13) and `kt_get_next_steps` (§4.5) key off instead, precisely because `status` alone can't see past one hop. An empty track (zero items) is never `done`.
 - `pivot_decision_id` (nullable) points at the `decisions` row that opened the currently-active pivot, or is `null` if there is none. Set and cleared only by `kt_record_decision` (§4.9) via its `effect` parameter — a plain `"note"` decision never touches it.

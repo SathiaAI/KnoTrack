@@ -322,6 +322,19 @@ describe('kt_sync_to_linear — workflow-state resolution', () => {
     expect(await linkRow(track_id)).toBeUndefined(); // pending cleared
   });
 
+  it('validates an override eagerly even for a non-done track (no pending row wedged)', async () => {
+    // A non-done track with a bad done_state_id must be rejected up front, not
+    // silently accepted until the track later becomes done.
+    const { project_id, track_id } = await makeProjectTrack({ doneStateId: 's-doing' });
+    const { state, deps } = makeFake();
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toMatch(/^LINEAR_STATE_CONFIG/);
+    expect(state.createCalls).toHaveLength(0);
+    // resolution failed BEFORE any claim -> no pending row left behind
+    expect(await linkRow(track_id)).toBeUndefined();
+  });
+
   it('fails LINEAR_STATE_CONFIG when the team has no completed state', async () => {
     const { project_id, track_id } = await makeProjectTrack();
     await markTrackDone(project_id, track_id);
