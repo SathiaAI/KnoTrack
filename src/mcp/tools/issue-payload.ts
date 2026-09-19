@@ -74,7 +74,10 @@ function sanitize(value: string): string {
  * its issue and everything else leaves it open. Items are rendered in
  * sequence order for a stable body (and therefore a stable content hash). */
 export function buildIssuePayload(track: TrackForIssue, items: ItemForIssue[]): IssuePayload {
-  const title = sanitize(truncate(track.title, TITLE_MAX));
+  // Escape FIRST, then enforce the limit: sanitize expands `<!--`/`-->` into
+  // longer entities, so truncating before escaping could push the result back
+  // over GitHub's 256-char title cap and 422 the sync.
+  const title = truncate(sanitize(track.title), TITLE_MAX);
   const isDone = track.status === 'done';
 
   // Deterministic order: sequence_position, then id as a stable tie-breaker

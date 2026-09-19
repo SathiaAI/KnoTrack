@@ -58,6 +58,17 @@ describe('buildIssuePayload', () => {
     expect(payload.title).toHaveLength(256);
   });
 
+  it('keeps the title within 256 chars even when escaping delimiters expands it', () => {
+    // Each `<!--` escapes to `&lt;!--` (+3 chars) and `-->` to `--&gt;` (+3).
+    // A near-limit title full of these must be truncated AFTER escaping, or it
+    // would exceed GitHub's 256-char cap and 422 the sync.
+    const dense = '<!---->'.repeat(80); // 560 raw chars, all delimiter bytes
+    const payload = buildIssuePayload({ id: TRACK_ID, title: dense, status: 'on_track' }, []);
+    expect(payload.title.length).toBeLessThanOrEqual(256);
+    // And the truncated title must not contain a raw, unescaped marker opener.
+    expect(payload.title).not.toContain('<!--');
+  });
+
   it('truncates the body to GitHub’s 65,536-char cap but always keeps the recovery marker', () => {
     const many = items(
       ...Array.from(
