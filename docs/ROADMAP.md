@@ -164,27 +164,39 @@ reconciliation" note below (already in this doc, now current as of PR
 #9): 11 of 14 tools are fully implemented and unit-tested
 (`T2.2`–`T2.10`, `T2.12`); the remaining 3 (`T2.11` `kt_check_drift`,
 `T2.13` `kt_sync_to_github`, `T2.14` `kt_sync_to_linear`) are correctly
-out of T2's real scope — full behavior is T5/T6 work — but even their
-*stub* acceptance criteria aren't fully met yet: all three currently
-return a generic `500 INTERNAL_ERROR` (`notImplementedResult` in
-`src/mcp/tool-helpers.ts`) rather than each one's specific
-bespoke-message contract (`T2.11` wants an empty result + "no heuristics
-configured"; `T2.13`/`T2.14` want "adapter not configured" after
-validating the item exists). That's a small, cheap, currently-untracked
-gap against T2's own stated acceptance criteria — worth a follow-up item
-rather than leaving implicit in a reconciliation note.
+out of T2's real scope — full behavior is T5/T6 work. Their *stub*
+acceptance criteria are now met as of **2026-09-18** (closing the small
+gap a prior draft flagged here): `kt_check_drift` returns a success empty
+scan with a `note: "no heuristics configured"`
+(`src/mcp/tools/check-drift.ts`); `kt_sync_to_github`/`kt_sync_to_linear`
+validate the project and track, then return `CONFLICT` (409)
+`"<type> adapter not configured"` with no HTTP call
+(`src/mcp/tools/sync-shared.ts`). `notImplementedResult` and
+`src/mcp/tools/stubs.ts` were removed. Design notes recorded here so they
+aren't re-litigated at T5: the missing-adapter precondition is a real
+MCP-level `CONFLICT` (per PRD §4.13 — distinct from the operational
+GitHub/Linear API failures, which are the `{ok:false, error}` results
+shipped in T5.2/T5.3); and an adapter row that exists before T5 (only
+reachable via fixtures/manual SQL, since no tool provisions one yet)
+returns a clear `INTERNAL_ERROR` `"<type> sync is not available in this
+build"` rather than a false success. T2 as a whole is still **not `done`**
+for unrelated reasons (e.g. `T2.1`'s `migrate down` runner is
+re-sequenced to `T7.7`).
 
-<!-- STUB_TOOLS: kt_check_drift, kt_sync_to_github, kt_sync_to_linear -->
+<!-- STUB_TOOLS: none -->
 **The line above is machine-checked, not decorative.** `npm run
 check-roadmap-drift` (wired into CI, `.github/workflows/ci.yml`) parses
-`src/mcp/tools/stubs.ts`'s actual `STUBS` array and fails the build if it
-doesn't match this exact list. This is the direct, deterministic answer
-to "how do we stop the roadmap silently going stale again" — added
+`src/mcp/tools/stubs.ts`'s `STUBS` array and fails the build if it
+doesn't match this exact list. As of 2026-09-18 all 14 tools ship real
+implementations, so `stubs.ts` has been removed and the marker reads
+`none`; the check treats a missing `stubs.ts` as zero stubs and passes
+only while the marker also says `none`. This is the direct, deterministic
+answer to "how do we stop the roadmap silently going stale again" — added
 2026-08-29 after this doc's Track status headers were found drifted for
-the second time. When a stub tool ships for real, update the marker line
-above in the same PR that removes it from `stubs.ts`, or CI blocks the
-merge. Don't hand-edit this line without also verifying it against
-`stubs.ts` — that defeats the point.
+the second time. If a stub tool is ever reintroduced, add it back to
+`stubs.ts` and to this marker in the same PR, or CI blocks the merge.
+Don't hand-edit this line without also verifying it against the code —
+that defeats the point.
 **depends_on:** `T1` (in practice, T2's implementation proceeded despite
 `T1.6` not being formally closed — see T1's status note above; recorded
 here rather than silently treating the dependency as satisfied).
@@ -241,25 +253,33 @@ for `kt_check_drift` in T6.
 11. **T2.11 — `kt_check_drift` stub implemented + unit-tested.**
     Acceptance: returns an empty result with a `"no heuristics
     configured"` note rather than querying `drift_flags` for real
-    findings; unit-tested per T1.5. depends_on: `T2.4`.
+    findings; unit-tested per T1.5. depends_on: `T2.4`. **Done
+    2026-09-18** (`src/mcp/tools/check-drift.ts`,
+    `tests/integration/check-drift.test.ts`).
 12. **T2.12 — `kt_render_roadmap` implemented + unit-tested.** Acceptance:
     generates a Markdown document from current tracks/items with zero
     database writes (asserted by a negative test); unit-tested per T1.5.
     depends_on: `T2.7`.
 13. **T2.13 — `kt_sync_to_github` stub implemented + unit-tested.**
-    Acceptance: validates its inputs and an item's existence, returns a
-    `"github adapter not configured"` result, makes no HTTP calls;
-    unit-tested per T1.5. depends_on: `T2.4`.
+    Acceptance: validates its inputs and that the project and track
+    exist, returns a `CONFLICT` `"github adapter not configured"` result,
+    makes no HTTP calls; unit-tested per T1.5. depends_on: `T2.4`. **Done
+    2026-09-18** (`src/mcp/tools/sync-to-github.ts` via
+    `src/mcp/tools/sync-shared.ts`, `tests/integration/sync-to-github.test.ts`).
 14. **T2.14 — `kt_sync_to_linear` stub implemented + unit-tested.**
-    Acceptance: validates its inputs and an item's existence, returns a
-    `"linear adapter not configured"` result, makes no HTTP calls;
-    unit-tested per T1.5. depends_on: `T2.4`.
+    Acceptance: validates its inputs and that the project and track
+    exist, returns a `CONFLICT` `"linear adapter not configured"` result,
+    makes no HTTP calls; unit-tested per T1.5. depends_on: `T2.4`. **Done
+    2026-09-18** (`src/mcp/tools/sync-to-linear.ts` via
+    `src/mcp/tools/sync-shared.ts`, `tests/integration/sync-to-linear.test.ts`).
 15. **T2.15 — Local server boots against local Postgres, full suite
     green.** Acceptance: the server starts locally (stdio or local HTTP),
     connects only to the local Postgres instance (zero outbound network
     calls), and the full unit-test suite covering `T2.2`–`T2.14` passes.
     depends_on: `T2.2`, `T2.3`, `T2.4`, `T2.5`, `T2.6`, `T2.7`, `T2.8`,
-    `T2.9`, `T2.10`, `T2.11`, `T2.12`, `T2.13`, `T2.14`.
+    `T2.9`, `T2.10`, `T2.11`, `T2.12`, `T2.13`, `T2.14`. **Done
+    2026-09-18** — with `T2.11`/`T2.13`/`T2.14` now implemented, the full
+    suite covering `T2.2`–`T2.14` is green (CI, `.github/workflows/ci.yml`).
 
 `kt_get_next_steps` (tool 5 of 14) is deliberately **not** in this list:
 it has no dedicated storage or side effects to build — it's a read query
@@ -443,17 +463,15 @@ edit is explicitly marked:
   papered over here. `T6.2` (orphan-file-change) isn't implemented at
   all, so `T6.3`'s "both heuristics" criterion is unmet regardless of
   how `T6.1` gets reconciled. `T2.11` (`kt_check_drift`) and the two
-  sync stubs (`T2.13`, `T2.14`) do **not** actually match their
-  stub-only acceptance criteria either, on closer check:
-  `registerStubTools` routes every remaining stub tool through the
-  same generic `notImplementedResult` (`src/mcp/tool-helpers.ts`), which
-  always returns a uniform `500 INTERNAL_ERROR` — not `T2.11`'s specific
-  "empty result with a `no heuristics configured` note", and not
-  `T2.13`/`T2.14`'s specific "adapter not configured" result after
-  validating the item exists. The generic-500 stub shape is the same for
-  every unimplemented tool (3 as of this branch — see the "Update" note
-  above; originally 9 when this paragraph was first written); none of the
-  three has the bespoke stub-response behavior its own T2 line calls for.
+  sync stubs (`T2.13`, `T2.14`) **did not** match their stub-only
+  acceptance criteria until **2026-09-18**, when they were implemented to
+  those criteria and
+  `registerStubTools`/`notImplementedResult`/`src/mcp/tools/stubs.ts`
+  were removed (see the T2 status note above). They no longer share a
+  generic `500 INTERNAL_ERROR`: `kt_check_drift` returns its empty-scan
+  result with a `no heuristics configured` note, and the two sync tools
+  return a `CONFLICT` `"<type> adapter not configured"` after validating
+  the project and track exist.
 - Nothing in `T1.6`'s "cross-document consistency... zero open
   discrepancies" gate accounted for this Track-vs-build gap either — it
   checks the docs against each other, not the docs against what actually
@@ -838,7 +856,10 @@ this Track.
    — confirmed byte-for-byte against the template string in
    `src/mcp/tool-helpers.ts`, not just visually compared, and consistent
    with what `T3.5` exercised on the first client. Full evidence and raw
-   payloads in `docs/client-compatibility.md`.
+   payloads in `docs/client-compatibility.md`. (Historical: that
+   stub-error payload was the T4.2-time contract; `kt_check_drift` was
+   reimplemented to a success empty scan on 2026-09-18 (T2.11), so this
+   record documents what was observed then, not current behavior.)
 3. **T4.3 — Client-compatibility notes documented.** Acceptance:
    `docs/client-compatibility.md` records any client-specific quirks
    observed in `T4.2` and confirms none required a server change.

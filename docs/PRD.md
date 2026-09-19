@@ -371,7 +371,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 
 ### 4.11 `kt_check_drift`
 
-**Description:** Standalone, on-demand, project-wide structural drift scan. **Registered with its real, TRD-accurate input schema so the full 14-tool surface is visible to clients, but not yet implemented in this build** — calling it currently returns a "not yet implemented" error. This section documents its target contract, which `kt_record_session_summary`'s scoped per-track re-check (§4.8) already implements a slice of.
+**Description:** Standalone, on-demand, project-wide structural drift scan. **Registered with its real, TRD-accurate input schema so the full 14-tool surface is visible to clients. In this build it ships the T2.11 stub slice** — it validates the project and returns a well-formed but empty scan (`flags: []`) carrying `note: "no heuristics configured"`; the heuristics that populate `flags` land in T6.4. This section documents its target contract, which `kt_record_session_summary`'s scoped per-track re-check (§4.8) already implements a slice of.
 
 **Inputs:** `project_id` (required) — only. There is no `track_id` scope and no `since` window in v1; a call always scans the whole project from scratch.
 
@@ -404,7 +404,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 **Acceptance criteria:**
 - **Given** an item is `done` out of its track's declared sequence, **when** the drift scan runs (today, via `kt_record_session_summary`'s scoped re-check touching that track), **then** a `SEQUENCE_SKIP` flag is raised for it.
 - **Given** a project larger than the configured scan caps, **when** `kt_check_drift` runs (once implemented), **then** the response has `truncated: true` rather than failing outright.
-- **Given** this build, **when** `kt_check_drift` is called at all, **then** the call currently fails with a "not yet implemented" error — a known, stub-tool limitation, not a bug in the contract described above.
+- **Given** this build, **when** `kt_check_drift` is called for an existing project, **then** it returns a success result with `flags: []`, `scanned_track_count: 0`, and `note: "no heuristics configured"` (no heuristics run yet — a known stub-tool limitation, not an error); an unknown project returns `NOT_FOUND` as usual.
 
 ### 4.12 `kt_render_roadmap`
 
@@ -426,7 +426,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 
 ### 4.13 `kt_sync_to_github`
 
-**Description:** **Registered with its real, TRD-accurate input schema; not yet implemented in this build** — calling it currently returns a "not yet implemented" error. This section documents its target contract: one GitHub sync operation, scoped to a single track, per call — there is no `pull`/`push`/direction choice and no item-level sync target in v1.
+**Description:** **Registered with its real, TRD-accurate input schema. In this build it ships the T2.13 stub slice** — it validates the project and track, then requires a configured GitHub adapter; with none stored it returns `CONFLICT` (see below) and makes no HTTP call. The actual GitHub sync is T5.2. This section documents its target contract: one GitHub sync operation, scoped to a single track, per call — there is no `pull`/`push`/direction choice and no item-level sync target in v1.
 
 **Inputs:** `project_id` (required), `track_id` (required). There is no `direction`, `github_repo` override, or `item_id` input.
 
@@ -441,11 +441,11 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 **Acceptance criteria:**
 - **Given** a project without GitHub credentials configured, **when** `kt_sync_to_github` is called, **then** the call fails with `CONFLICT`.
 - **Given** GitHub returns a 403 rate-limit response (once this tool is implemented), **when** called, **then** the response is `{ ok: false, error: "GITHUB_RATE_LIMITED: ..." }` — a successful tool call, not a thrown error.
-- **Given** this build, **when** `kt_sync_to_github` is called at all, **then** the call currently fails with a "not yet implemented" error, consistent with its stub status.
+- **Given** this build, **when** `kt_sync_to_github` is called for an existing project and track with no GitHub adapter configured, **then** the missing-adapter `CONFLICT` (above) is the shipped behavior and no HTTP call is made; the operational GitHub API path (the `{ ok: false, error }` outcomes) is not yet implemented (T5.2). An adapter row present via fixtures/manual SQL yields an `INTERNAL_ERROR` (`github sync is not available in this build`), never a false success.
 
 ### 4.14 `kt_sync_to_linear`
 
-**Description:** Identical shape and semantics to `kt_sync_to_github` (§4.13), mirrored for Linear. Also registered with its real input schema and not yet implemented in this build.
+**Description:** Identical shape and semantics to `kt_sync_to_github` (§4.13), mirrored for Linear. Also registered with its real input schema; in this build it ships the same T2.14 stub slice — project/track validation plus the missing-adapter `CONFLICT` precondition — with the operational Linear API path deferred to T5.3.
 
 **Inputs:** `project_id` (required), `track_id` (required).
 
@@ -456,7 +456,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 
 **Acceptance criteria:**
 - **Given** a project without Linear credentials configured, **when** `kt_sync_to_linear` is called, **then** the call fails with `CONFLICT`.
-- **Given** this build, **when** `kt_sync_to_linear` is called at all, **then** the call currently fails with a "not yet implemented" error, consistent with its stub status.
+- **Given** this build, **when** `kt_sync_to_linear` is called for an existing project and track with no Linear adapter configured, **then** the missing-adapter `CONFLICT` (§4.13's shape, Linear-specific) is the shipped behavior and no HTTP call is made; the operational Linear API path is not yet implemented (T5.3). An adapter row present via fixtures/manual SQL yields an `INTERNAL_ERROR` (`linear sync is not available in this build`), never a false success.
 
 ---
 
@@ -547,7 +547,7 @@ Because KnoTrack collects no central telemetry (§5.6), every metric below is so
 - **Event** — An append-only log entry created by `kt_record_session_summary`, recording what happened in a session: a `summary_text`, the files touched, and any items touched. Events carry no per-caller identity (§5.3) and no self-reported drift opinion — drift is structural only. Events are never edited or deleted once written; recording one also re-runs the drift-detector's rules scoped to that Event's track.
 - **Decision** — An explicit, append-only record of an intentional pivot or plan change, scoped to one Track: a `title`, a `rationale` (why), a `what_changed` description (what concretely changed), and an `effect` (`note` | `open_pivot` | `resolve_pivot`, T2.16 — default `note`, which has no lifecycle side effect at all). Decisions are never inferred from a status change or a boolean flag — they only exist because `kt_record_decision` was deliberately called with real content. Only `open_pivot`/`resolve_pivot` move a Track into or out of `pivot_pending` (§4.9); a Decision never directly suppresses any drift flag, though it changes the input to the `UNDOCUMENTED_DECISION` flag specifically.
 - **Drift** — A structurally-computed mismatch between the declared plan and what actually happened, never from a self-reported opinion. Evaluated against a six-type flag catalog (`STALE_TRACK`, `DEPENDENCY_GAP`, `SEQUENCE_SKIP`, `UNDOCUMENTED_DECISION`, `ORPHAN_ITEM`, `SYNC_DRIFT` — full definitions in §4.11); as of this build, only `SEQUENCE_SKIP` is actually raised anywhere, via `kt_record_session_summary`'s scoped per-track re-check, since the full-project `kt_check_drift` scan is not yet implemented.
-- **Adapter** — A per-project integration to an external source-of-truth system (GitHub or Linear) that provides one-way, per-track push sync, gated on the server holding the relevant credential for that project (a row in the `adapters` table) — not a separate "enable this adapter" flag. Adapter credentials are always server-side only, never passed through any MCP tool's output. Both sync tools are registered with their real contracts but not yet implemented in this build (§4.13, §4.14).
+- **Adapter** — A per-project integration to an external source-of-truth system (GitHub or Linear) that provides one-way, per-track push sync, gated on the server holding the relevant credential for that project (a row in the `adapters` table) — not a separate "enable this adapter" flag. Adapter credentials are always server-side only, never passed through any MCP tool's output. Both sync tools ship their precondition stub in this build (project/track validation plus a `CONFLICT` when no adapter is configured); the outward push itself is not yet implemented (§4.13, §4.14 — T5.2/T5.3).
 - **Advisory** — The general operating principle behind `kt_get_next_steps` and, in effect, every other KnoTrack tool: the system recommends, tracks, and reports, but never assigns, dispatches, or blocks a human/agent's actual actions.
 
 ---
