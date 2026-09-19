@@ -949,17 +949,35 @@ this Track.
 
 ## T5 — GitHub + Linear adapters
 
-**Status:** `blocked`.
+**Status:** `on_track` (corrected 2026-09-19 — the two blockers named
+below are both cleared: `T4` went `done` 2026-09-07 and `T2.16` shipped
+2026-09-08, so the stale `blocked` no longer holds). `T5.1` is **done +
+verified 2026-09-19** (see that item); `T5.2`–`T5.4` remain open.
 **depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
 of "the track's most recent change" and any future logic that reads
 track completion to decide what to push should be built against the
 corrected track-status model, not the currently-broken one).
 
-1. **T5.1 — Credential encryption at rest implemented.** Acceptance:
+1. **T5.1 — Credential encryption at rest implemented. ✅ Done + verified
+   2026-09-19.** Acceptance:
    `adapters.encrypted_credential` is written using envelope encryption
    (e.g. AES-256-GCM under a server-held master key), the plaintext token
    is never persisted, and a unit test confirms the stored bytes are
    ciphertext with a correct decrypt round-trip. depends_on: `T2.15`.
+   **Verification (2026-09-19):** implementation lives in
+   `src/crypto/credential-cipher.ts` — AES-256-GCM, a fresh random 12-byte
+   IV per call, packed `iv||authTag(16)||ciphertext` into the single
+   `adapters.encrypted_credential` column; the 256-bit master key is held
+   server-side (`config.encryptionKey`) and never persisted with the
+   record. Acceptance is met by two tests: `tests/unit/credential-cipher.test.ts`
+   (round-trip, unique IV per call, stored bytes never contain the
+   plaintext, wrong-key throws, tampered-ciphertext throws) **and**
+   `tests/integration/register-project.test.ts` (reads
+   `encrypted_credential` back from the `adapters` table and asserts
+   `decryptCredential(stored, key)` returns the original token — the
+   "stored value is ciphertext with a correct decrypt round-trip" proof at
+   the DB layer). No code change was needed; this item was already
+   satisfied by the `T2.15` register-project work and is now confirmed.
 2. **T5.2 — `kt_sync_to_github` fully implemented.** Acceptance: given a
    stored encrypted GitHub credential, calling `kt_sync_to_github`
    creates/updates a linked GitHub Issue for a KnoTrack item and records
