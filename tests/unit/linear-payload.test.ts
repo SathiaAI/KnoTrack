@@ -209,4 +209,18 @@ describe('resolveLinearStateId — non-done track (never auto-moves)', () => {
     expect(r).toHaveProperty('error');
     expect(String((r as { error: string }).error)).toMatch(/canceled/);
   });
+
+  it('errors when open_state_id is a completed-type state (terminal, Codex PR #25)', () => {
+    // A completed state is terminal: placing a non-done issue there (or reopening
+    // into it) is a misconfiguration and must surface LINEAR_STATE_CONFIG, not {ok}.
+    const r = resolveLinearStateId({
+      states: STATES,
+      trackStatus: 'on_track',
+      mode: 'create',
+      openStateId: 's-done',
+    });
+    expect(r).toHaveProperty('error');
+    expect(String((r as { error: string }).error)).toMatch(/LINEAR_STATE_CONFIG/);
+    expect(String((r as { error: string }).error)).toMatch(/terminal/);
+  });
 });

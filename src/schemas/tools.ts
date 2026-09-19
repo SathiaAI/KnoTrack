@@ -28,7 +28,8 @@ const linearAdapterInput = z
     // moves a non-done track's issue backward. When set, they pin exact Linear
     // WorkflowState UUIDs: done_state_id must be a 'completed'-type state;
     // open_state_id is the state a reopened (no-longer-done) track's issue is
-    // moved to and must not be a 'canceled'-type state.
+    // moved to and must be a non-terminal (backlog/unstarted/started) state
+    // (a 'completed' or 'canceled' state is rejected with LINEAR_STATE_CONFIG).
     // `.trim()` before `.min(1)` so a whitespace-only override is rejected at
     // registration (a blank string is not a valid state id) rather than being
     // silently coerced to "unset" and falling back to auto behavior (Codex PR #25).

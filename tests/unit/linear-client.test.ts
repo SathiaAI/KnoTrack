@@ -168,10 +168,10 @@ describe('createFetchLinearClient — error mapping', () => {
     if (!res.ok) expect(res.ambiguous).toBe(false);
   });
 
-  it('maps a GraphQL entity-not-found error to LINEAR_NOT_FOUND (prefix), ambiguous on a mutation', async () => {
-    // The prefix is surfaced, but a GraphQL-layer error on a MUTATION is
-    // ambiguous — the error may have followed a side effect (GPT-6 adversarial
-    // review). So the pending link is kept, not cleared.
+  it('maps a GraphQL entity-not-found error on a MUTATION to LINEAR_NOT_FOUND, DEFINITIVE', async () => {
+    // A GraphQL entity-not-found is a pre-execution rejection (the entity does
+    // not exist, so nothing was written) -> definitive: the pending claim is
+    // cleared and the next sync retries cleanly (Codex PR #25).
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -191,11 +191,11 @@ describe('createFetchLinearClient — error mapping', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
-      expect(res.ambiguous).toBe(true);
+      expect(res.ambiguous).toBe(false);
     }
   });
 
-  it('keeps a mutation GraphQL rate-limit/auth/not-found error AMBIGUOUS (no false clear -> no duplicate)', async () => {
+  it('classifies mutation GraphQL rate-limit/auth/not-found as DEFINITIVE (pre-execution rejection, clean retry)', async () => {
     for (const message of ['rate limited', 'authentication failed', 'Entity not found']) {
       vi.stubGlobal(
         'fetch',
@@ -203,7 +203,26 @@ describe('createFetchLinearClient — error mapping', () => {
       );
       const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
       expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.ambiguous).toBe(true);
+      if (!res.ok) expect(res.ambiguous).toBe(false);
+    }
+  });
+
+  it('keeps a mutation GraphQL OPAQUE error ambiguous (may have followed a side effect)', async () => {
+    // The reconciliation: only a generic/unrecognized mutation error can legally
+    // follow a write, so it alone stays ambiguous and keeps the pending link.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(200, JSON.stringify({ errors: [{ message: 'internal server error' }] })),
+        ),
+      ),
+    );
+    const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/^LINEAR_UNKNOWN_ERROR/);
+      expect(res.ambiguous).toBe(true);
     }
   });
 
@@ -219,6 +238,37 @@ describe('createFetchLinearClient — error mapping', () => {
     if (!res.ok) {
       expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
       expect(res.ambiguous).toBe(false);
+    }
+  });
+
+  it('redacts a boundary-straddling secret BEFORE truncation (HTTP body and GraphQL message)', async () => {
+    // The secret sits so the 300-char cut lands mid-key. Redaction must run on
+    // the FULL upstream text first, or a partial credential survives truncation
+    // (Codex PR #25). 'lin_api_su' is the prefix an unredacted slice would keep.
+    const pad = 'x'.repeat(290);
+    // HTTP body path (5xx).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(500, pad + KEY))),
+    );
+    let res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).not.toContain(KEY);
+      expect(res.error).not.toContain('lin_api_su');
+      expect(res.error).toContain('[REDACTED]');
+    }
+    // GraphQL message path (200 with errors).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(200, JSON.stringify({ errors: [{ message: pad + KEY }] })))),
+    );
+    res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).not.toContain(KEY);
+      expect(res.error).not.toContain('lin_api_su');
+      expect(res.error).toContain('[REDACTED]');
     }
   });
 

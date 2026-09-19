@@ -179,9 +179,9 @@ export function resolveLinearStateId(args: {
       return {
         error: `LINEAR_STATE_CONFIG: configured open_state_id is not a workflow state of this team`,
       };
-    if (s.type === 'canceled')
+    if (s.type === 'completed' || s.type === 'canceled')
       return {
-        error: `LINEAR_STATE_CONFIG: configured open_state_id is a 'canceled' state; choose a non-canceled state to reopen into`,
+        error: `LINEAR_STATE_CONFIG: configured open_state_id is a '${s.type}' (terminal) state; choose a non-terminal (backlog/unstarted/started) state to reopen into`,
       };
   }
 

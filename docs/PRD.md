@@ -130,7 +130,7 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 |---|---|---|---|
 | `name` | string, 1–200 chars | yes | Display name. Not required to be unique — uniqueness is on `(source_type, source_ref)`, not `name` (see Business rules). |
 | `source_type` | enum: `"github" \| "linear" \| "local"` | yes | What kind of source `source_ref` identifies. |
-| `source_ref` | string, 1–500 chars | yes | Repo URL, Linear project ID, or local filesystem path, depending on `source_type`. |
+| `source_ref` | string, 1–500 chars | yes | Repo URL, Linear project ID, or local filesystem path, depending on `source_type`. For Linear this is the project identity; the team that issues sync into is `adapters.linear.team_id` (separate adapter metadata). |
 | `adapters` | object `{ github?, linear? }` | no | Per-adapter credentials, supplied directly in the call (not read from server env vars). `github: { personal_access_token, repo? }`; `linear: { api_key, team_id, done_state_id?, open_state_id? }` (the two optional workflow-state overrides are T5.3 — see §4.14). |
 
 **Output:** `{ project_id }`
@@ -547,7 +547,7 @@ Because KnoTrack collects no central telemetry (§5.6), every metric below is so
 
 ## 8. Glossary
 
-- **Project** — The top-level entity representing one software project KnoTrack has been pointed at. Identified by a `source_type` (`github`, `linear`, or `local`) and a `source_ref` whose meaning depends on `source_type` (a repo, a Linear team, or a local filesystem path) — not by a `root_path`/`repo_url` pair. All other entities belong to exactly one Project.
+- **Project** — The top-level entity representing one software project KnoTrack has been pointed at. Identified by a `source_type` (`github`, `linear`, or `local`) and a `source_ref` whose meaning depends on `source_type` (a repo, a Linear project, or a local filesystem path) — not by a `root_path`/`repo_url` pair. All other entities belong to exactly one Project.
 - **Track** — A grouping of related work within a Project (roughly: an epic or workstream), with a derived `status` of `on_track`, `pivot_pending`, `blocked`, or `done` (T2.16 — computed at read time from the track's own item completion, its direct dependencies' local state, and whether it has an active pivot; there is no `tracks.status` column), and optional declared dependencies on other Tracks. No tool writes `status` directly; `kt_record_decision`'s `effect: "open_pivot"`/`"resolve_pivot"` is the only thing that moves a track into or out of `pivot_pending`, and `blocked` clears itself automatically once every direct dependency becomes locally OK (§4.4, §4.9).
 - **Item** — A single, discrete piece of work inside a Track. Has a `sequence_position` (its declared order within the Track), a stored `status` (`pending`, `in_progress`, `blocked`, `done` — written only by `kt_update_item_status`), and optional dependencies on other Items, restricted in v1 to items within the same Track. There is no `file_patterns` field on Items in this build.
 - **Event** — An append-only log entry created by `kt_record_session_summary`, recording what happened in a session: a `summary_text`, the files touched, and any items touched. Events carry no per-caller identity (§5.3) and no self-reported drift opinion — drift is structural only. Events are never edited or deleted once written; recording one also re-runs the drift-detector's rules scoped to that Event's track.

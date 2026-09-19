@@ -179,7 +179,7 @@ Input schema:
       "type": "string",
       "minLength": 1,
       "maxLength": 500,
-      "description": "github: 'owner/repo'. linear: team key or team UUID. local: absolute or repo-relative filesystem path."
+      "description": "github: 'owner/repo'. linear: the Linear project identity (the team that issues sync into is adapters.linear.team_id, separate adapter metadata). local: absolute or repo-relative filesystem path."
     },
     "adapters": {
       "type": "object",

@@ -9,10 +9,10 @@
 //
 // Linear differences handled here:
 //   - Transport is GraphQL: one endpoint, POST { query, variables }. A
-//     GraphQL request can return HTTP 200 with a top-level `errors` array
-//     (the mutation was REJECTED, nothing was written) — that is mapped to
-//     {ok:false} exactly like an HTTP error, with ambiguous=false because a
-//     rejected GraphQL mutation is transactional (no partial write).
+//     GraphQL request can return HTTP 200 with a top-level `errors` array.
+//     A known pre-execution rejection (auth / rate-limit / entity-not-found)
+//     means nothing was written -> {ok:false}, ambiguous:false. A generic
+//     mutation error can legally follow a side effect, so it stays ambiguous.
 //   - Auth header is the raw api_key ("Authorization: <key>"), NOT
 //     "Bearer <key>" (that form is only for OAuth access tokens).
 //   - There is no open/closed; a workflow state (stateId) is resolved by
@@ -99,7 +99,8 @@ function isNotFoundMessage(text: string): boolean {
  * interpolate upstream response bodies and native-fetch exception messages
  * (which can quote a malformed Authorization header value), so redaction — not
  * truncation — is what keeps invariant 3 (the key never appears in output).
- * Applied at every error return in `send`. */
+ * Applied to the FULL upstream text inside each map function, before any
+ * length truncation, so a boundary-straddling secret cannot survive. */
 function redactSecret(text: string, secret: string): string {
   if (!secret) return text;
   return text.split(secret).join('[REDACTED]');
@@ -113,8 +114,12 @@ function mapHttpError(
   status: number,
   headers: Headers,
   bodyText: string,
+  secret: string,
 ): { error: string; ambiguous: boolean } {
-  const detail = bodyText.slice(0, 300).replace(/\s+/g, ' ').trim();
+  // Redact the FULL upstream body BEFORE truncating: a secret that straddles
+  // the 300-char boundary would otherwise survive as a partial the later
+  // exact-string redact cannot match (Codex PR #25).
+  const detail = redactSecret(bodyText, secret).slice(0, 300).replace(/\s+/g, ' ').trim();
   // 5xx is checked FIRST: a 5xx may have committed the write server-side and
   // then failed to respond, so it is ALWAYS ambiguous — even when it carries a
   // Retry-After header (Codex PR #25: a 5xx+Retry-After must not be reclassified
@@ -152,16 +157,21 @@ function mapHttpError(
 function mapGraphqlErrors(
   errors: unknown[],
   isMutation: boolean,
+  secret: string,
 ): { error: string; ambiguous: boolean } {
-  const msg = errors
-    .map((e) =>
-      e && typeof e === 'object' && typeof (e as Record<string, unknown>).message === 'string'
-        ? ((e as Record<string, unknown>).message as string)
-        : '',
-    )
-    .filter(Boolean)
-    .join('; ')
-    .slice(0, 300);
+  // Redact the FULL joined message BEFORE truncating (see mapHttpError): a
+  // boundary-straddling key must not survive as an unmatched partial (Codex PR #25).
+  const msg = redactSecret(
+    errors
+      .map((e) =>
+        e && typeof e === 'object' && typeof (e as Record<string, unknown>).message === 'string'
+          ? ((e as Record<string, unknown>).message as string)
+          : '',
+      )
+      .filter(Boolean)
+      .join('; '),
+    secret,
+  ).slice(0, 300);
   const code = errors
     .map((e) => {
       const ext =
@@ -172,31 +182,28 @@ function mapGraphqlErrors(
     })
     .join(' ');
   const haystack = `${msg} ${code}`;
-  // Ambiguity is decided by the operation, NOT the error category (adversarial
-  // review, GPT-6, PR #25): a GraphQL request returns HTTP 200 because it was
-  // accepted and (partially) executed, and the spec permits execution errors —
-  // including 'not found' / 'forbidden' / 'rate limit' messages — to appear
-  // AFTER a side effect, alongside partial data. So for a MUTATION, an errors
-  // array never proves the root mutation did not write: it stays ambiguous, and
-  // createFresh keeps its pending link for marker recovery rather than clearing
-  // it and risking a duplicate. The category (prefix) is still surfaced for the
-  // caller, but it does not downgrade ambiguity. A READ writes nothing, so its
-  // errors are never ambiguous.
-  const ambiguous = isMutation;
+  // Known pre-execution rejections are DEFINITIVE (Codex PR #25, reconciling the
+  // GPT-6 adversarial pass): Linear rejects auth / rate-limit / entity-not-found
+  // BEFORE the mutation executes, so nothing was written. Clearing the pending
+  // claim lets the next sync retry cleanly instead of wedging forever (e.g. an
+  // expired key later rotated, or a stale team_id). Only a genuinely OPAQUE
+  // execution error can legally follow a side effect on a mutation, so it alone
+  // stays ambiguous (ambiguous:isMutation), keeping the pending link for marker
+  // recovery. A READ writes nothing, so every read error is definitive.
   if (isRateLimitedMessage(haystack))
-    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous };
+    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: false };
   if (isAuthMessage(haystack))
-    return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous };
+    return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous: false };
   if (isNotFoundMessage(haystack))
-    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous };
-  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous };
+    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous: false };
+  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: isMutation };
 }
 
-function mapThrown(err: unknown): { error: string; ambiguous: boolean } {
+function mapThrown(err: unknown, secret: string): { error: string; ambiguous: boolean } {
   if (err instanceof Error && err.name === 'AbortError') {
     return { error: 'LINEAR_TIMEOUT: request exceeded the configured timeout', ambiguous: true };
   }
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = redactSecret(err instanceof Error ? err.message : String(err), secret);
   // A request that never got a response may still have been received and
   // acted on by Linear -> ambiguous for the create path.
   return { error: `LINEAR_UNKNOWN_ERROR: ${msg}`, ambiguous: true };
@@ -229,10 +236,10 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       });
       const text = await res.text();
       if (!res.ok) {
-        const mapped = mapHttpError(res.status, res.headers, text);
+        const mapped = mapHttpError(res.status, res.headers, text, apiKey);
         return {
           ok: false,
-          error: redactSecret(mapped.error, apiKey),
+          error: mapped.error,
           ambiguous: mapped.ambiguous,
         };
       }
@@ -249,10 +256,10 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       }
       const obj = (parsed ?? {}) as Record<string, unknown>;
       if (Array.isArray(obj.errors) && obj.errors.length > 0) {
-        const mapped = mapGraphqlErrors(obj.errors, isMutation);
+        const mapped = mapGraphqlErrors(obj.errors, isMutation, apiKey);
         return {
           ok: false,
-          error: redactSecret(mapped.error, apiKey),
+          error: mapped.error,
           ambiguous: mapped.ambiguous,
         };
       }
@@ -266,8 +273,8 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       }
       return { ok: true, value: data as Record<string, unknown> };
     } catch (err) {
-      const mapped = mapThrown(err);
-      return { ok: false, error: redactSecret(mapped.error, apiKey), ambiguous: mapped.ambiguous };
+      const mapped = mapThrown(err, apiKey);
+      return { ok: false, error: mapped.error, ambiguous: mapped.ambiguous };
     } finally {
       clearTimeout(timer);
     }
