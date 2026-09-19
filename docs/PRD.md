@@ -382,7 +382,8 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
   truncated: boolean,
   scanned_track_count,
   total_track_count,
-  scan_duration_ms
+  scan_duration_ms,
+  note?: string   // stub build only (T2.11): "no heuristics configured"; removed once real heuristics ship (T6.4)
 }
 ```
 
@@ -441,7 +442,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 **Acceptance criteria:**
 - **Given** a project without GitHub credentials configured, **when** `kt_sync_to_github` is called, **then** the call fails with `CONFLICT`.
 - **Given** GitHub returns a 403 rate-limit response (once this tool is implemented), **when** called, **then** the response is `{ ok: false, error: "GITHUB_RATE_LIMITED: ..." }` — a successful tool call, not a thrown error.
-- **Given** this build, **when** `kt_sync_to_github` is called for an existing project and track with no GitHub adapter configured, **then** the missing-adapter `CONFLICT` (above) is the shipped behavior and no HTTP call is made; the operational GitHub API path (the `{ ok: false, error }` outcomes) is not yet implemented (T5.2). An adapter row present via fixtures/manual SQL yields an `INTERNAL_ERROR` (`github sync is not available in this build`), never a false success.
+- **Given** this build, **when** `kt_sync_to_github` is called for an existing project and track with no GitHub adapter configured, **then** the missing-adapter `CONFLICT` (above) is the shipped behavior and no HTTP call is made; the operational GitHub API path (the `{ ok: false, error }` outcomes) is not yet implemented (T5.2). An adapter configured via `kt_register_project` (which provisions adapters from inline credentials) yields an `INTERNAL_ERROR` (`github sync is not available in this build`), never a false success.
 
 ### 4.14 `kt_sync_to_linear`
 
@@ -456,7 +457,7 @@ There is no `advisory_notice` field echoed on every response and no `blocking_su
 
 **Acceptance criteria:**
 - **Given** a project without Linear credentials configured, **when** `kt_sync_to_linear` is called, **then** the call fails with `CONFLICT`.
-- **Given** this build, **when** `kt_sync_to_linear` is called for an existing project and track with no Linear adapter configured, **then** the missing-adapter `CONFLICT` (§4.13's shape, Linear-specific) is the shipped behavior and no HTTP call is made; the operational Linear API path is not yet implemented (T5.3). An adapter row present via fixtures/manual SQL yields an `INTERNAL_ERROR` (`linear sync is not available in this build`), never a false success.
+- **Given** this build, **when** `kt_sync_to_linear` is called for an existing project and track with no Linear adapter configured, **then** the missing-adapter `CONFLICT` (§4.13's shape, Linear-specific) is the shipped behavior and no HTTP call is made; the operational Linear API path is not yet implemented (T5.3). An adapter configured via `kt_register_project` (which provisions adapters from inline credentials) yields an `INTERNAL_ERROR` (`linear sync is not available in this build`), never a false success.
 
 ---
 

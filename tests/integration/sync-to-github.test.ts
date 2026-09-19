@@ -74,16 +74,22 @@ describe('kt_sync_to_github (T2.13 stub)', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  // Only reachable via fixtures / manual SQL in this build (no MCP tool
-  // provisions an adapter until T5); the stub must not fall through to a
-  // false success or claim "not configured".
-  it('edge: INTERNAL_ERROR "not available in this build" when a github adapter row already exists', async () => {
-    const { project_id, track_id } = await makeProjectAndTrack();
-    await upsertAdapter(pool, {
-      projectId: project_id,
-      type: 'github',
-      encryptedCredential: Buffer.from('github-secret'),
-      config: {},
+  // Reachable through the public kt_register_project path (it provisions
+  // the adapter from inline credentials), not just fixtures/manual SQL;
+  // the stub must not fall through to a false success or claim "not
+  // configured".
+  it('edge: INTERNAL_ERROR "not available in this build" when a github adapter is configured via kt_register_project', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'P',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: { github: { personal_access_token: 'ghp_test_secret' } },
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
     });
     await expect(syncToGithubService(pool, config, { project_id, track_id })).rejects.toMatchObject(
       {

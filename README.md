@@ -16,12 +16,14 @@ harness — not just one vendor's tool.
 
 ## Status
 
-Pre-release, v0.1.0. 11 of the 14 planned tools are implemented and
+Pre-release, v0.1.0. All 14 planned tools are implemented and
 dogfooded (KnoTrack tracks its own build using itself — see
-[`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1);
-the remaining 3 are registered with their real, TRD-accurate input schemas
-so `tools/list` already reflects the full surface, but each currently
-returns a clear "not yet implemented" error rather than doing partial work.
+[`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1).
+The last 3 ship as stubs (2026-09-18, T2.11/T2.13/T2.14): `kt_check_drift`
+returns an empty scan (real heuristics land in T6), and the two sync tools
+validate then return a clear `CONFLICT` ("adapter not configured") or,
+once an adapter is configured, a "sync is not available in this build"
+error — full GitHub/Linear sync ships in T5.
 
 Every change lands through a mandatory adversarial-review gate before it's
 considered reviewed: deterministic checks (build, lint, typecheck, unit,

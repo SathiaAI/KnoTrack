@@ -11,7 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Config } from '../../config/env.js';
 import { checkDriftInputSchema, type CheckDriftInput } from '../../schemas/tools.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { getTrackSummariesForProject } from '../../db/queries/tracks.js';
+import { countTracksForProject } from '../../db/queries/tracks.js';
 import { notFound } from '../errors.js';
 import { runTool } from '../tool-helpers.js';
 
@@ -37,13 +37,15 @@ export async function checkDriftService(
   // No heuristics run in this build, so nothing is scanned and no flags
   // are raised. total_track_count still reflects reality so a client can
   // see the scan scope; scanned_track_count stays 0 to make the
-  // not-actually-scanned state explicit (not a clean bill of health).
-  const tracks = await getTrackSummariesForProject(pool, input.project_id);
+  // not-actually-scanned state explicit (not a clean bill of health). Use
+  // a plain COUNT(*) — not a track_readiness join — so this empty stub
+  // scan can't do an uncapped full-project computation (Codex PR #22).
+  const totalTrackCount = await countTracksForProject(pool, input.project_id);
   return {
     flags: [],
     truncated: false,
     scanned_track_count: 0,
-    total_track_count: tracks.length,
+    total_track_count: totalTrackCount,
     scan_duration_ms: Date.now() - start,
     note: 'no heuristics configured',
   };

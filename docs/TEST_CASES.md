@@ -417,6 +417,8 @@ section tests the *detection logic itself*, which is triggered both inline by
 
 `kt_sync_to_github(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a github adapter is configured for the project (a missing adapter is a `CONFLICT` error, not `{ok:false}`).
 
+**This build (T2.13 stub):** a _configured_ github adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`github sync is not available in this build`) — the success (`GHSY-01`) and operational-failure (`GHSY-04`/`GHSY-05`) rows below describe the T5.2 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
+
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
 | GHSY-01 | kt_sync_to_github | Positive | Project has a working github adapter configured; track exists | Valid `project_id`, `track_id` | 200; `{ok:true}` (or documented success payload); no credential in response |
@@ -438,6 +440,8 @@ section tests the *detection logic itself*, which is triggered both inline by
 ## 16. `kt_sync_to_linear`
 
 `kt_sync_to_linear(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a linear adapter is configured (a missing adapter is a `CONFLICT` error, not `{ok:false}`). Mirror of §15.
+
+**This build (T2.14 stub):** a _configured_ linear adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`linear sync is not available in this build`) — the success (`LNSY-01`) and operational-failure (`LNSY-04`/`LNSY-05`) rows below describe the T5.3 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|

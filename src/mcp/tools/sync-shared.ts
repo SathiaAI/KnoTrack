@@ -25,10 +25,11 @@ export interface SyncInput {
  *   - an adapter row exists -> the real GitHub/Linear push is not built
  *     in this build, so this returns a clear "<type> sync is not
  *     available in this build" INTERNAL_ERROR rather than a false success
- *     or a misleading "not configured". This state is only reachable via
- *     fixtures / manual SQL today (no MCP tool provisions an adapter
- *     until T5); the T5.2 / T5.3 API path replaces this branch and the
- *     success return below.
+ *     or a misleading "not configured". This is a normal, client-reachable
+ *     state: kt_register_project provisions an adapter from inline
+ *     credentials (register-project.ts), so any client that registers a
+ *     project with a GitHub/Linear credential reaches it. The T5.2 / T5.3
+ *     API path replaces this branch and the success return below.
  */
 export async function syncAdapterStub(
   pool: Pool,

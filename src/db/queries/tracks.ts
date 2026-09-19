@@ -323,3 +323,19 @@ export async function listTracksForListing(
   );
   return result.rows;
 }
+
+/** Cheap project track count for kt_check_drift's stub scan: a plain
+ * COUNT(*) that does NOT join `track_readiness` (which aggregates every
+ * track's item completion and dependency state across the project). The
+ * stub returns an empty scan, so it only needs the total, not each
+ * track's derived status; the readiness join risked doing much of an
+ * uncapped full-project computation — and hitting the statement timeout
+ * on a large project — merely to obtain `total_track_count` (Codex PR #22
+ * review). */
+export async function countTracksForProject(db: Queryable, projectId: string): Promise<number> {
+  const result = await db.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM tracks WHERE project_id = $1`,
+    [projectId],
+  );
+  return result.rows[0]?.count ?? 0;
+}

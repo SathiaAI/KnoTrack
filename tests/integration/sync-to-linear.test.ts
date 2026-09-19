@@ -72,13 +72,20 @@ describe('kt_sync_to_linear (T2.14 stub)', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('edge: INTERNAL_ERROR "not available in this build" when a linear adapter row already exists', async () => {
-    const { project_id, track_id } = await makeProjectAndTrack();
-    await upsertAdapter(pool, {
-      projectId: project_id,
-      type: 'linear',
-      encryptedCredential: Buffer.from('linear-secret'),
-      config: {},
+  // Reachable through the public kt_register_project path (it provisions
+  // the adapter from inline credentials), not just fixtures/manual SQL.
+  it('edge: INTERNAL_ERROR "not available in this build" when a linear adapter is configured via kt_register_project', async () => {
+    const { project_id } = await registerProjectService(pool, config, {
+      name: 'P',
+      source_type: 'local',
+      source_ref: `/tmp/${crypto.randomUUID()}`,
+      adapters: { linear: { api_key: 'lin_test_secret', team_id: 'team_123' } },
+    });
+    const { track_id } = await createTrackService(pool, config, {
+      project_id,
+      title: 'T',
+      depends_on: [],
+      source_doc_ref: undefined,
     });
     await expect(syncToLinearService(pool, config, { project_id, track_id })).rejects.toMatchObject(
       {

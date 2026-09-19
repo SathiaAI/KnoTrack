@@ -176,8 +176,8 @@ validate the project and track, then return `CONFLICT` (409)
 aren't re-litigated at T5: the missing-adapter precondition is a real
 MCP-level `CONFLICT` (per PRD §4.13 — distinct from the operational
 GitHub/Linear API failures, which are the `{ok:false, error}` results
-shipped in T5.2/T5.3); and an adapter row that exists before T5 (only
-reachable via fixtures/manual SQL, since no tool provisions one yet)
+shipped in T5.2/T5.3); and an adapter configured before T5 (reachable now, since
+`kt_register_project` provisions adapters from inline credentials)
 returns a clear `INTERNAL_ERROR` `"<type> sync is not available in this
 build"` rather than a false success. T2 as a whole is still **not `done`**
 for unrelated reasons (e.g. `T2.1`'s `migrate down` runner is
