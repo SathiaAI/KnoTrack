@@ -2,7 +2,7 @@
 // (T2.13 / T2.14 stub slice — docs/PRD.md §4.13/§4.14).
 import type { Pool } from 'pg';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { findTrackById } from '../../db/queries/tracks.js';
+import { trackExistsInProject } from '../../db/queries/tracks.js';
 import { adapterConfigured } from '../../db/queries/adapters.js';
 import { conflict, internalError, notFound } from '../errors.js';
 
@@ -40,8 +40,8 @@ export async function syncAdapterStub(
   if (!project) {
     throw notFound('project not found', { project_id: input.project_id });
   }
-  const track = await findTrackById(pool, input.project_id, input.track_id);
-  if (!track) {
+  const trackExists = await trackExistsInProject(pool, input.project_id, input.track_id);
+  if (!trackExists) {
     throw notFound('track not found in this project', {
       project_id: input.project_id,
       track_id: input.track_id,

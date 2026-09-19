@@ -339,3 +339,23 @@ export async function countTracksForProject(db: Queryable, projectId: string): P
   );
   return result.rows[0]?.count ?? 0;
 }
+
+/** Existence-only, project-scoped track check for the sync-tool stub
+ * precondition path. Deliberately does NOT join `track_readiness` (which
+ * aggregates items across every track and computes the recursive
+ * dependency closure): the sync stubs discard all readiness fields and
+ * only need to confirm the track exists and belongs to the project, so
+ * the readiness join risked hitting the statement timeout on a large
+ * project before the tool could return its CONFLICT (Codex PR #22
+ * review). */
+export async function trackExistsInProject(
+  db: Queryable,
+  projectId: string,
+  trackId: string,
+): Promise<boolean> {
+  const result = await db.query(`SELECT 1 FROM tracks WHERE id = $1 AND project_id = $2 LIMIT 1`, [
+    trackId,
+    projectId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
