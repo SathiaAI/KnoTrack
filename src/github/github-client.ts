@@ -141,10 +141,12 @@ export function createFetchGitHubClient(token: string, opts: GitHubClientOptions
           return {
             ok: false,
             error: 'GITHUB_UNKNOWN_ERROR: malformed JSON in GitHub response',
-            // The status was 2xx, so a create may already have succeeded —
-            // keep it ambiguous so the caller retains its pending link for
-            // recovery instead of clearing and recreating a duplicate.
-            ambiguous: true,
+            // A 2xx WRITE (POST/PATCH) may already have created/changed the
+            // issue, so keep it ambiguous — the caller retains its pending
+            // link for recovery instead of clearing and recreating a
+            // duplicate. A GET (the recovery search) creates nothing, so a
+            // malformed read is not ambiguous.
+            ambiguous: method !== 'GET',
           };
         }
         return { ok: true, value: { status: res.status, body } };

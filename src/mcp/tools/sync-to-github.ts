@@ -276,6 +276,14 @@ async function updateExisting(
       error: 'GITHUB_UNKNOWN_ERROR: linked row is missing its issue number; reconcile manually',
     };
   }
+  // DELIBERATE: we do NOT hold a DB/advisory lock across this network call.
+  // The row lock in the decision transaction is released before we get here,
+  // so two concurrent updates of the same track can both PATCH. That is safe:
+  // PATCH is idempotent, there is no duplicate/lost issue, and a momentarily-
+  // stale content_hash self-corrects on the next sync (one redundant PATCH).
+  // Holding a lock across a multi-second GitHub round-trip would risk pool
+  // exhaustion on a self-hosted server — a worse tradeoff. (CodeRabbit flagged
+  // this Major and wanted a lock; considered + deferred — see ROADMAP T5.2.)
   const res = await client.updateIssue(repo, issueNumber, payload);
   if (!res.ok) {
     // A 404 here means the linked issue was deleted/transferred: return the

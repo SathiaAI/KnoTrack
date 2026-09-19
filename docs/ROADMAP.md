@@ -1004,7 +1004,20 @@ corrected track-status model, not the currently-broken one).
    (a transient 5xx/secondary-rate-limit surfaces as `{ok:false}` for the
    caller to retry — add them here if the GitHub surface grows); and a
    stale-link `404` on update returns `GITHUB_NOT_FOUND` and does **not**
-   auto-recreate (a relink tool would be a separate item). The **one
+   auto-recreate (a relink tool would be a separate item). **Update-path
+   concurrency (considered + deferred, 2026-09-19):** the *create* path is
+   fully serialized (the `UNIQUE(track_id, adapter_type)` claim guarantees
+   exactly one create, no duplicate). For the *update* path we deliberately
+   do **not** hold a DB/advisory lock across the GitHub network call —
+   CodeRabbit flagged this (Major) and recommended one; we declined because
+   holding a lock across a multi-second network round-trip risks pool
+   exhaustion/stalls on a self-hosted server, and the worst case without it
+   is benign: two concurrent updates PATCH the same issue idempotently
+   (no duplicate, no lost issue), and a momentarily-stale `content_hash`
+   self-corrects on the next sync (one redundant PATCH). Revisit only if
+   real concurrent-update contention is observed; a future option is a
+   per-(track,adapter) advisory lock scoped to just the finalize, or an
+   `operation_id` compare-and-set on the hash write. The **one
    remaining acceptance gate** is the real-repo verification against
    `SathiaAI/KnoTrack` (dogfood) with a Paul-approved fine-grained PAT — not
    part of the code/CI deliverable; see the handoff. `migrations/009_track_external_links.sql`.
