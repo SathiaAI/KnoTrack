@@ -7,6 +7,7 @@ import { createTrackService } from '../../src/mcp/tools/create-track.js';
 import { createItemService } from '../../src/mcp/tools/create-item.js';
 import { updateItemStatusService } from '../../src/mcp/tools/update-item-status.js';
 import { upsertAdapter } from '../../src/db/queries/adapters.js';
+import { encryptCredential } from '../../src/crypto/credential-cipher.js';
 import type { GitHubClient, GitHubIssueRef, GitHubResult } from '../../src/github/github-client.js';
 import { closeTestPool, getTestConfig, getTestPool, truncateAll, UNKNOWN_UUID } from './helpers.js';
 
@@ -262,11 +263,12 @@ describe('kt_sync_to_github — operational failures ({ok:false}, never throw)',
     const { project_id, track_id } = await makeProjectTrack({ repo: REPO });
     const first = makeFake();
     await syncToGithubService(pool, config, { project_id, track_id }, first.deps);
-    // repoint the adapter at a different repo
+    // repoint the adapter at a different repo (keep a decryptable credential —
+    // the handler decrypts before it reaches the repo-changed refusal)
     await upsertAdapter(pool, {
       projectId: project_id,
       type: 'github',
-      encryptedCredential: Buffer.from('x'),
+      encryptedCredential: encryptCredential('ghp_test_secret', config.encryptionKey),
       config: { repo: 'SathiaAI/Other' },
     });
     const { state, deps } = makeFake();
