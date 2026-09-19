@@ -159,3 +159,19 @@ export async function getGithubIssueUrlForTrack(
   );
   return result.rows[0]?.external_url ?? null;
 }
+
+/** The linked Linear issue URL for a track, or null when unlinked (T5.3).
+ * Sibling of getGithubIssueUrlForTrack; kept adapter-specific for the same
+ * reason — callers ask for one destination's URL, never "some" URL. */
+export async function getLinearIssueUrlForTrack(
+  db: Queryable,
+  trackId: string,
+): Promise<string | null> {
+  const result = await db.query<{ external_url: string | null }>(
+    `SELECT external_url FROM track_external_links
+     WHERE track_id = $1 AND adapter_type = 'linear' AND sync_state = 'linked'
+     LIMIT 1`,
+    [trackId],
+  );
+  return result.rows[0]?.external_url ?? null;
+}

@@ -51,7 +51,7 @@ export function trackMarker(trackId: string): string {
   return `<!-- knotrack:track:${trackId} -->`;
 }
 
-function truncate(value: string, max: number): string {
+export function truncate(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
@@ -65,7 +65,7 @@ function itemCheckbox(status: string): string {
  * an unrelated issue — nor open a stray hidden HTML comment. HTML-escaping
  * the delimiters keeps the text readable (GitHub renders `&lt;`/`&gt;` as
  * literal `<`/`>`) while making the marker syntax impossible to form. */
-function sanitize(value: string): string {
+export function sanitize(value: string): string {
   return value.replace(/<!--/g, '&lt;!--').replace(/-->/g, '--&gt;');
 }
 

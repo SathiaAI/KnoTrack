@@ -382,3 +382,15 @@ export async function touchGithubSyncWatermark(
   // pushed, not the later "now()".
   await db.query(`UPDATE tracks SET last_github_sync_at = $2 WHERE id = $1`, [trackId, at]);
 }
+
+/** Stamps `tracks.last_linear_sync_at` after a successful Linear sync (T5.3).
+ * Same snapshot-time semantics as the GitHub watermark above: `at` is the
+ * payload snapshot time, not the completion time, so a change made after the
+ * snapshot still reads as drift on the next scan. */
+export async function touchLinearSyncWatermark(
+  db: Queryable,
+  trackId: string,
+  at: Date,
+): Promise<void> {
+  await db.query(`UPDATE tracks SET last_linear_sync_at = $2 WHERE id = $1`, [trackId, at]);
+}
