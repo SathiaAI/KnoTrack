@@ -90,6 +90,10 @@ function isAuthMessage(text: string): boolean {
   return /authentication|not authenticated|invalid api key|unauthorized|forbidden/i.test(text);
 }
 
+function isNotFoundMessage(text: string): boolean {
+  return /entity_?not_?found|not found|could not find|does not exist|no such/i.test(text);
+}
+
 /** Maps a completed HTTP response (non-2xx) to a prefixed error + ambiguity.
  * 4xx means Linear rejected the request, so a create that got one did NOT
  * write (ambiguous=false). 5xx may have written then failed to respond, so a
@@ -161,6 +165,13 @@ function mapGraphqlErrors(
     return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: false };
   if (isAuthMessage(haystack))
     return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous: false };
+  // A missing team/issue (e.g. issueUpdate on a deleted issue, or issueCreate
+  // with a stale team_id) is reported as a 200 GraphQL error; surface it as the
+  // contract's LINEAR_NOT_FOUND so a caller can tell "needs relink/reconfigure"
+  // apart from a transient unknown failure (Codex PR #25). It is definitive —
+  // the entity does not exist, so nothing was written — hence not ambiguous.
+  if (isNotFoundMessage(haystack))
+    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous: false };
   return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: isMutation };
 }
 

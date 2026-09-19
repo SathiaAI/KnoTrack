@@ -168,6 +168,30 @@ describe('createFetchLinearClient — error mapping', () => {
     if (!res.ok) expect(res.ambiguous).toBe(false);
   });
 
+  it('maps a GraphQL entity-not-found error to LINEAR_NOT_FOUND (definitive)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(
+            200,
+            JSON.stringify({
+              errors: [
+                { message: 'Entity not found: Issue', extensions: { code: 'ENTITY_NOT_FOUND' } },
+              ],
+            }),
+          ),
+        ),
+      ),
+    );
+    const res = await client().updateIssue('i1', { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
+      expect(res.ambiguous).toBe(false);
+    }
+  });
+
   it('maps a GraphQL rate-limit error to LINEAR_RATE_LIMITED', async () => {
     vi.stubGlobal(
       'fetch',
