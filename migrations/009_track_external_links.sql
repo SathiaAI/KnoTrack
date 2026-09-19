@@ -23,6 +23,8 @@
 -- operation_id lets a stale completion be detected and rejected rather
 -- than overwriting a newer result.
 
+BEGIN;
+
 CREATE TABLE track_external_links (
   id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   track_id      uuid        NOT NULL REFERENCES tracks (id) ON DELETE CASCADE,
@@ -54,3 +56,5 @@ CREATE TRIGGER trg_track_external_links_set_updated_at
   BEFORE UPDATE ON track_external_links
   FOR EACH ROW
   EXECUTE FUNCTION set_updated_at();
+
+COMMIT;
