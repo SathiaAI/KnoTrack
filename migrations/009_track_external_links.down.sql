@@ -11,9 +11,14 @@ BEGIN;
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM track_external_links) THEN
-    RAISE EXCEPTION
-      'Refusing to drop track_external_links: at least one row exists (a track is linked to or mid-sync with an external issue). Back up or intentionally clear the data first if you really want to roll this back.';
+  -- Guard the row check for a re-run where the table is already gone:
+  -- SELECT ... FROM a missing table raises undefined_table and would abort
+  -- the rollback before the idempotent DROP below.
+  IF to_regclass('track_external_links') IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM track_external_links) THEN
+      RAISE EXCEPTION
+        'Refusing to drop track_external_links: at least one row exists (a track is linked to or mid-sync with an external issue). Back up or intentionally clear the data first if you really want to roll this back.';
+    END IF;
   END IF;
 END $$;
 
