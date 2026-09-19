@@ -47,11 +47,6 @@ import {
 
 const ADAPTER = 'github' as const;
 const USER_AGENT = 'knotrack-mcp-server';
-// Below this age a `pending` link whose issue the marker search can't find
-// might just be un-indexed (GitHub search is eventually consistent), so we
-// ask the caller to retry rather than recreate. Past it, a search miss is
-// strong enough evidence to clear and recreate.
-const RECOVERY_INDEX_LAG_MS = 60_000;
 
 export interface GithubSyncOutput extends Record<string, unknown> {
   ok: boolean;
@@ -325,38 +320,21 @@ async function recoverPending(
     return okSynced(pool, trackId);
   }
 
-  // Marker not found. Search is eventually consistent, so only treat a miss
-  // as authoritative once the pending row is older than the index-lag window.
-  const ageMs = Date.now() - row.created_at.getTime();
-  if (ageMs <= RECOVERY_INDEX_LAG_MS) {
-    return {
-      ok: false,
-      error:
-        'GITHUB_UNKNOWN_ERROR: a previous sync did not complete and its outcome is not yet confirmable; retry shortly',
-    };
-  }
-  const operationId = randomUUID();
-  const reclaimed = await withTransaction(pool, async (c) => {
-    const cur = await getLinkForUpdate(c, trackId, ADAPTER);
-    if (!cur || cur.sync_state !== 'pending' || cur.operation_id !== row.operation_id) {
-      return false;
-    }
-    await clearPendingLink(c, { trackId, adapterType: ADAPTER, operationId: row.operation_id });
-    const claimed = await claimPendingLink(c, {
-      trackId,
-      adapterType: ADAPTER,
-      repoIdentity: repo,
-      operationId,
-    });
-    return claimed !== undefined;
-  });
-  if (!reclaimed) {
-    return {
-      ok: false,
-      error: 'GITHUB_UNKNOWN_ERROR: pending sync changed during recovery; retry shortly',
-    };
-  }
-  return createFresh(pool, client, repo, trackId, operationId, payload, hash);
+  // Marker not found. A pending link only survives an AMBIGUOUS create
+  // (definitive failures clear it in createFresh), so the create outcome is
+  // unknown by construction here. A GitHub Search miss — even a complete one
+  // — does NOT prove no issue was created: search indexing is eventually
+  // consistent and can lag arbitrarily. Per the T5.2 design decision
+  // (Paul, 2026-09-19: duplicate prevention takes priority over automatic
+  // retry when the outcome cannot be established), we do NOT auto-recreate.
+  // Recovery only ever adopts an issue the marker positively finds; an
+  // unresolved pending link is surfaced for explicit resolution (an operator
+  // clears it, or a future relink tool) rather than risking a duplicate.
+  return {
+    ok: false,
+    error:
+      'GITHUB_UNKNOWN_ERROR: a previous sync did not complete and no matching issue could be found; its outcome cannot be safely confirmed, so this track is not auto-recreated (that would risk a duplicate). Clear the pending link (or use a relink tool) to resync.',
+  };
 }
 
 export function registerSyncToGithubTool(

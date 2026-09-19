@@ -325,33 +325,22 @@ describe('kt_sync_to_github — durable creation-intent / recovery', () => {
     expect(row?.external_id).toBe('42');
   });
 
-  it('recreates when an aged pending link has no findable issue', async () => {
+  it('never recreates on a marker miss — surfaces the pending link for resolution (no duplicate)', async () => {
     const { project_id, track_id } = await makeProjectTrack({ repo: REPO });
+    // even an old pending row is not recreated: a Search miss cannot prove the
+    // earlier (ambiguous) create did not land, so we refuse rather than risk a
+    // duplicate (T5.2: duplicate prevention over auto-retry).
     await pool.query(
       `INSERT INTO track_external_links (track_id, adapter_type, sync_state, repo_identity, operation_id, created_at)
-       VALUES ($1, 'github', 'pending', $2, $3, now() - interval '2 minutes')`,
+       VALUES ($1, 'github', 'pending', $2, $3, now() - interval '2 hours')`,
       [track_id, REPO, randomUUID()],
     );
     const { state, deps } = makeFake(); // findIssueByMarker default -> null
     const res = await syncToGithubService(pool, config, { project_id, track_id }, deps);
-    expect(res).toEqual({ ok: true });
-    expect(state.findCalls).toHaveLength(1);
-    expect(state.createCalls).toHaveLength(1); // aged miss -> safe to recreate
-    expect((await linkRow(track_id))?.sync_state).toBe('linked');
-  });
-
-  it('asks the caller to retry (no recreate) for a fresh pending link with no findable issue', async () => {
-    const { project_id, track_id } = await makeProjectTrack({ repo: REPO });
-    await pool.query(
-      `INSERT INTO track_external_links (track_id, adapter_type, sync_state, repo_identity, operation_id)
-       VALUES ($1, 'github', 'pending', $2, $3)`,
-      [track_id, REPO, randomUUID()],
-    );
-    const { state, deps } = makeFake();
-    const res = await syncToGithubService(pool, config, { project_id, track_id }, deps);
     expect(res.ok).toBe(false);
-    expect(String(res.error)).toMatch(/retry shortly/);
-    expect(state.createCalls).toHaveLength(0);
+    expect(String(res.error)).toMatch(/not auto-recreated/);
+    expect(state.findCalls).toHaveLength(1);
+    expect(state.createCalls).toHaveLength(0); // NEVER recreate on a miss
     expect((await linkRow(track_id))?.sync_state).toBe('pending');
   });
 
