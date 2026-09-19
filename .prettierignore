@@ -2,3 +2,9 @@ dist
 node_modules
 coverage
 docs
+
+# HANDOFF.md is a hand-maintained session resume doc committed directly
+# (outside the PR/format flow), so it isn't prettier-clean — same category
+# as docs/ above. Ignoring it keeps CI's format:check green and stops a
+# future direct HANDOFF commit from re-breaking the build.
+HANDOFF.md
