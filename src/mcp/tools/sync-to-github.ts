@@ -124,6 +124,7 @@ export async function syncToGithubService(
   const payload = buildIssuePayload(
     { id: snap.track.id, title: snap.track.title, status: snap.track.status },
     snap.items.map((i) => ({
+      id: i.id,
       title: i.title,
       status: i.status,
       sequence_position: i.sequence_position,

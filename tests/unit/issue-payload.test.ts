@@ -9,7 +9,12 @@ import {
 const TRACK_ID = '11111111-1111-4111-8111-111111111111';
 
 function items(...specs: Array<[string, string, number]>): ItemForIssue[] {
-  return specs.map(([title, status, sequence_position]) => ({ title, status, sequence_position }));
+  return specs.map(([title, status, sequence_position], i) => ({
+    id: `item-${i}`,
+    title,
+    status,
+    sequence_position,
+  }));
 }
 
 describe('buildIssuePayload', () => {
@@ -77,6 +82,42 @@ describe('buildIssuePayload', () => {
     );
     const payload = buildIssuePayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, many);
     expect(payload.body).toMatch(/more item\(s\) not shown/);
+  });
+
+  it('neutralizes a fake recovery marker embedded in an item or track title', () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222';
+    const fake = trackMarker(OTHER); // another track's exact marker
+    const payload = buildIssuePayload(
+      { id: TRACK_ID, title: `Sneaky ${fake}`, status: 'on_track' },
+      items([`item ${fake}`, 'pending', 1]),
+    );
+    // the ONLY genuine marker present is this track's own (appended by us);
+    // the injected one must be broken so it cannot be marker-matched.
+    expect(payload.body).toContain(trackMarker(TRACK_ID));
+    expect(payload.body).not.toContain(fake);
+  });
+
+  it('reports omitted items when the body is byte-truncated below the item cap', () => {
+    // 250 items (< 300 cap) but huge titles -> byte budget cuts the tail
+    const many = items(
+      ...Array.from(
+        { length: 250 },
+        (_, i) => ['z'.repeat(400), 'pending', i] as [string, string, number],
+      ),
+    );
+    const payload = buildIssuePayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, many);
+    expect(payload.body.length).toBeLessThanOrEqual(65_536);
+    expect(payload.body).toMatch(/more item\(s\) not shown/); // not silently partial
+    expect(payload.body).toContain(trackMarker(TRACK_ID));
+  });
+
+  it('orders items deterministically by (sequence_position, id) so the hash is stable', () => {
+    const a: ItemForIssue = { id: 'aaa', title: 'A', status: 'pending', sequence_position: 1 };
+    const b: ItemForIssue = { id: 'bbb', title: 'B', status: 'pending', sequence_position: 1 };
+    const forward = buildIssuePayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, [a, b]);
+    const reversed = buildIssuePayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, [b, a]);
+    expect(payloadContentHash(forward)).toBe(payloadContentHash(reversed));
+    expect(forward.body.indexOf('A')).toBeLessThan(forward.body.indexOf('B'));
   });
 });
 

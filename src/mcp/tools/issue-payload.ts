@@ -25,6 +25,10 @@ export interface TrackForIssue {
 }
 
 export interface ItemForIssue {
+  /** Stable tie-breaker for equal sequence_position (which the schema
+   * permits) so the rendered order — and therefore the content hash — is
+   * deterministic across calls. */
+  id: string;
   title: string;
   /** Item status: pending | in_progress | done | blocked. */
   status: string;
@@ -55,39 +59,69 @@ function itemCheckbox(status: string): string {
   return status === 'done' ? '[x]' : '[ ]';
 }
 
+/** Neutralizes HTML-comment delimiters in user-controlled text (item/track
+ * titles) so a title can never inject a fake `<!-- knotrack:track:… -->`
+ * marker into the body — which would let recovery search match or overwrite
+ * an unrelated issue — nor open a stray hidden HTML comment. HTML-escaping
+ * the delimiters keeps the text readable (GitHub renders `&lt;`/`&gt;` as
+ * literal `<`/`>`) while making the marker syntax impossible to form. */
+function sanitize(value: string): string {
+  return value.replace(/<!--/g, '&lt;!--').replace(/-->/g, '--&gt;');
+}
+
 /** Deterministic mapping — pure function of (track, items). `done` is the
  * only terminal item/track status in the model, so a `done` track closes
  * its issue and everything else leaves it open. Items are rendered in
  * sequence order for a stable body (and therefore a stable content hash). */
 export function buildIssuePayload(track: TrackForIssue, items: ItemForIssue[]): IssuePayload {
-  const title = truncate(track.title, TITLE_MAX);
+  const title = sanitize(truncate(track.title, TITLE_MAX));
   const isDone = track.status === 'done';
 
-  const ordered = [...items].sort((a, b) => a.sequence_position - b.sequence_position);
-  const shown = ordered.slice(0, ITEM_RENDER_CAP);
-  const checklist = shown.map((i) => `- ${itemCheckbox(i.status)} ${i.title}`).join('\n');
-  const elided =
-    ordered.length > shown.length
-      ? `\n\n_… ${ordered.length - shown.length} more item(s) not shown._`
-      : '';
+  // Deterministic order: sequence_position, then id as a stable tie-breaker
+  // (sequence_position is NOT unique per track), so an unchanged track always
+  // renders the same body — and hashes the same — across calls.
+  const ordered = [...items].sort(
+    (a, b) => a.sequence_position - b.sequence_position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
 
-  const content = [
+  const header = [
     '_Synced from KnoTrack — KnoTrack owns this issue’s title, body, and open/closed state and will overwrite manual edits to them._',
     '',
     `**Track status:** \`${track.status}\``,
     '',
     '### Items',
-    checklist.length > 0 ? checklist : '_No items yet._',
-    elided,
+    '',
   ].join('\n');
 
-  // The hidden recovery marker MUST survive truncation: if a very long body
-  // were cut with the marker at the end, crash recovery could not find the
-  // issue and would create a duplicate. So reserve room for the marker and
-  // truncate the content, never the marker.
+  // The hidden recovery marker MUST survive truncation (losing it would break
+  // crash recovery -> duplicates), and the checklist is built WITHIN the
+  // remaining byte budget so a long body is never silently cut without an
+  // accurate "N more not shown" notice — which also changes the hash, forcing
+  // a re-sync rather than a silent partial. Reserve room for the marker and a
+  // worst-case notice.
   const markerBlock = `\n\n${trackMarker(track.id)}`;
-  const room = Math.max(0, BODY_MAX - markerBlock.length);
-  const body = truncate(content, room) + markerBlock;
+  const NOTICE_RESERVE = 64;
+  const budget = Math.max(0, BODY_MAX - markerBlock.length);
+
+  const lines: string[] = [];
+  let used = header.length;
+  let shownCount = 0;
+  for (const item of ordered) {
+    if (shownCount >= ITEM_RENDER_CAP) break;
+    const line = `- ${itemCheckbox(item.status)} ${sanitize(item.title)}\n`;
+    const reserve = shownCount + 1 < ordered.length ? NOTICE_RESERVE : 0;
+    if (used + line.length + reserve > budget) break;
+    lines.push(line);
+    used += line.length;
+    shownCount += 1;
+  }
+
+  const omitted = ordered.length - shownCount;
+  const checklist =
+    shownCount > 0 ? lines.join('') : ordered.length === 0 ? '_No items yet._\n' : '';
+  const notice = omitted > 0 ? `\n_… ${omitted} more item(s) not shown._` : '';
+
+  const body = truncate(header + checklist + notice, budget) + markerBlock;
 
   const payload: IssuePayload = {
     title,
