@@ -29,8 +29,11 @@ const linearAdapterInput = z
     // WorkflowState UUIDs: done_state_id must be a 'completed'-type state;
     // open_state_id is the state a reopened (no-longer-done) track's issue is
     // moved to and must not be a 'canceled'-type state.
-    done_state_id: z.string().min(1).max(200).optional(),
-    open_state_id: z.string().min(1).max(200).optional(),
+    // `.trim()` before `.min(1)` so a whitespace-only override is rejected at
+    // registration (a blank string is not a valid state id) rather than being
+    // silently coerced to "unset" and falling back to auto behavior (Codex PR #25).
+    done_state_id: z.string().trim().min(1).max(200).optional(),
+    open_state_id: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

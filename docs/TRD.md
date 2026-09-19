@@ -197,7 +197,9 @@ Input schema:
           "type": "object",
           "properties": {
             "api_key": { "type": "string", "minLength": 1, "maxLength": 512 },
-            "team_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+            "team_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "done_state_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "open_state_id": { "type": "string", "minLength": 1, "maxLength": 200 }
           },
           "required": ["api_key", "team_id"],
           "additionalProperties": false
@@ -959,7 +961,7 @@ similar name — it's never raised anywhere in this build.
 | `ORPHAN_ITEM` | `warning` | An item's `depends_on_item_id` points to an item belonging to a **different** `track_id` than the item itself. (Should be prevented at write time by `kt_create_item`'s same-track restriction — defensive check only, e.g. for imported/migrated data.) |
 | `SYNC_DRIFT` | `warning` | The project has credentials configured for an adapter (a row exists in `adapters` for `github` and/or `linear`), and the track's `updated_at`-equivalent (most recent item status change or event on that track) is later than its `last_github_sync_at` / `last_linear_sync_at` respectively — i.e. local state has moved since the last successful sync. `last_github_sync_at`/`last_linear_sync_at` are updated only on a successful (`{ok: true}`) `kt_sync_to_github`/`kt_sync_to_linear` call. |
 
-**Schema decided (Paul, 2026-08-25); rule still unbuilt.** `last_github_sync_at`/`last_linear_sync_at` now exist as nullable `timestamptz` columns directly on `tracks` (`migrations/005_tracks_sync_timestamps.sql`) — scoped per track, not on `adapters`, since `uq_adapters_project_type` allows only one adapter row per `(project_id, type)` and a project can have more than one track syncing through that same adapter; a `tracks`-scoped column has no such sharing problem, while an `adapters`-scoped one would make syncing track A silently mark track B "up to date" too. See that migration's header comment for the full reasoning, including why a `track_id`+`adapter_id` join table was considered and rejected (no real second-adapter-per-type case exists to join against, given `uq_adapters_project_type`). This closes the schema gap only: `SYNC_DRIFT` itself is still unbuilt (the only two `kind` values `drift_flags` currently accepts, `out_of_sequence` and `orphan_file_change`, still don't include a sync-drift kind — that plus `kt_sync_to_github`/`kt_sync_to_linear`'s actual implementation remain T6/T5 work, not started).
+**Schema decided (Paul, 2026-08-25); rule still unbuilt.** `last_github_sync_at`/`last_linear_sync_at` now exist as nullable `timestamptz` columns directly on `tracks` (`migrations/005_tracks_sync_timestamps.sql`) — scoped per track, not on `adapters`, since `uq_adapters_project_type` allows only one adapter row per `(project_id, type)` and a project can have more than one track syncing through that same adapter; a `tracks`-scoped column has no such sharing problem, while an `adapters`-scoped one would make syncing track A silently mark track B "up to date" too. See that migration's header comment for the full reasoning, including why a `track_id`+`adapter_id` join table was considered and rejected (no real second-adapter-per-type case exists to join against, given `uq_adapters_project_type`). This closes the schema gap only: `SYNC_DRIFT` itself is still unbuilt (the only two `kind` values `drift_flags` currently accepts, `out_of_sequence` and `orphan_file_change`, still don't include a sync-drift kind — that remains T6 work, not started). `kt_sync_to_github` and `kt_sync_to_linear` themselves are now implemented (T5.2 / T5.3) and write `last_github_sync_at` / `last_linear_sync_at` on each successful sync — so the watermark side of `SYNC_DRIFT` is already populated; only the drift rule that reads it is outstanding.
 
 ---
 

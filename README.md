@@ -16,7 +16,7 @@ harness — not just one vendor's tool.
 
 ## Status
 
-Pre-release, v0.1.0. 13 of the 14 planned tools are fully implemented; 11 of
+Pre-release, v0.1.0. 13 of the 14 planned tools are fully implemented; 12 of
 those are dogfooded (KnoTrack tracks its own build using itself — see
 [`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1).
 `kt_sync_to_github` (T5.2) and `kt_sync_to_linear` (T5.3) are both
@@ -54,7 +54,7 @@ include full diffs and raw model output.
 | `kt_update_item_status`     | implemented | Move an item's status forward (or flag it blocked)                                               |
 | `kt_check_drift`            | stub        | On-demand drift scan (T2.11 stub: empty scan until heuristics ship in T6)                        |
 | `kt_render_roadmap`         | implemented | Render a roadmap view from tracked items                                                         |
-| `kt_sync_to_github`         | implemented | One-way idempotent sync of a track to a GitHub Issue (T5.2; real-repo dogfood gate pending)      |
+| `kt_sync_to_github`         | implemented | One-way idempotent sync of a track to a GitHub Issue (T5.2; dogfooded against a real repo)       |
 | `kt_sync_to_linear`         | implemented | One-way idempotent sync of a track to a Linear Issue (T5.3; real-workspace dogfood gate pending) |
 
 Full request/response contracts for every tool, implemented or planned,

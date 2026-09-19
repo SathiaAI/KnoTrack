@@ -131,7 +131,7 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 | `name` | string, 1–200 chars | yes | Display name. Not required to be unique — uniqueness is on `(source_type, source_ref)`, not `name` (see Business rules). |
 | `source_type` | enum: `"github" \| "linear" \| "local"` | yes | What kind of source `source_ref` identifies. |
 | `source_ref` | string, 1–500 chars | yes | Repo URL, Linear project ID, or local filesystem path, depending on `source_type`. |
-| `adapters` | object `{ github?, linear? }` | no | Per-adapter credentials, supplied directly in the call (not read from server env vars). `github: { personal_access_token, repo? }`; `linear: { api_key, team_id }`. |
+| `adapters` | object `{ github?, linear? }` | no | Per-adapter credentials, supplied directly in the call (not read from server env vars). `github: { personal_access_token, repo? }`; `linear: { api_key, team_id, done_state_id?, open_state_id? }` (the two optional workflow-state overrides are T5.3 — see §4.14). |
 
 **Output:** `{ project_id }`
 
