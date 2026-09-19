@@ -107,8 +107,11 @@ export async function syncToGithubService(
   //    ONE consistent snapshot so the rendered payload (and its hash) can't
   //    mix a pre- and post-change view if items change mid-call.
   const snap = await withReadSnapshot(pool, async (c) => {
+    // now() inside a REPEATABLE READ transaction is the snapshot boundary —
+    // the exact "as of" time of the state we are about to push.
+    const asOf = (await c.query<{ t: Date }>('SELECT now() AS t')).rows[0]!.t;
     const t = await findTrackById(c, input.project_id, input.track_id);
-    return { track: t, items: t ? await listItemsByTrack(c, t.id) : [] };
+    return { asOf, track: t, items: t ? await listItemsByTrack(c, t.id) : [] };
   });
   if (!snap.track) {
     // Track deleted between the existence check and here — treat as not found.
@@ -117,6 +120,7 @@ export async function syncToGithubService(
       track_id: input.track_id,
     });
   }
+  const syncedAt = snap.asOf;
   const payload = buildIssuePayload(
     { id: snap.track.id, title: snap.track.title, status: snap.track.status },
     snap.items.map((i) => ({
@@ -157,7 +161,7 @@ export async function syncToGithubService(
   switch (decision.kind) {
     case 'noop':
       // Nothing to push, but we confirmed the issue is in sync -> watermark.
-      return okSynced(pool, track.id);
+      return okSynced(pool, track.id, syncedAt);
     case 'repo_changed':
       return {
         ok: false,
@@ -169,19 +173,29 @@ export async function syncToGithubService(
         error: 'GITHUB_UNKNOWN_ERROR: another sync for this track is in progress; retry shortly',
       };
     case 'update':
-      return updateExisting(pool, client, repo, track.id, decision.row, payload, hash);
+      return updateExisting(pool, client, repo, track.id, decision.row, payload, hash, syncedAt);
     case 'create':
-      return createFresh(pool, client, repo, track.id, decision.operationId, payload, hash);
+      return createFresh(
+        pool,
+        client,
+        repo,
+        track.id,
+        decision.operationId,
+        payload,
+        hash,
+        syncedAt,
+      );
     case 'pending':
-      return recoverPending(pool, client, repo, track.id, decision.row, payload, hash);
+      return recoverPending(pool, client, repo, track.id, decision.row, payload, hash, syncedAt);
   }
 }
 
-/** Records the sync watermark and returns success. Called on every ok:true
- * path (create, update, no-op, adopt) so tracks.last_github_sync_at always
- * reflects the most recent confirmed sync (T5.2; SYNC_DRIFT input for T6). */
-async function okSynced(pool: Pool, trackId: string): Promise<GithubSyncOutput> {
-  await withTransaction(pool, (c) => touchGithubSyncWatermark(c, trackId));
+/** Records the sync watermark (to the payload snapshot time) and returns
+ * success. Called on every ok:true path (create, update, no-op, adopt) so
+ * tracks.last_github_sync_at reflects the state actually pushed (T5.2;
+ * SYNC_DRIFT input for T6). */
+async function okSynced(pool: Pool, trackId: string, syncedAt: Date): Promise<GithubSyncOutput> {
+  await withTransaction(pool, (c) => touchGithubSyncWatermark(c, trackId, syncedAt));
   return { ok: true };
 }
 
@@ -201,6 +215,7 @@ async function createFresh(
   operationId: string,
   payload: GitHubIssuePayload,
   hash: string,
+  syncedAt: Date,
 ): Promise<GithubSyncOutput> {
   const created = await client.createIssue(repo, payload);
   if (!created.ok) {
@@ -239,7 +254,7 @@ async function createFresh(
         'GITHUB_UNKNOWN_ERROR: issue created but its link could not be finalized; reconcile manually',
     };
   }
-  return okSynced(pool, trackId);
+  return okSynced(pool, trackId, syncedAt);
 }
 
 async function updateExisting(
@@ -250,6 +265,7 @@ async function updateExisting(
   row: TrackExternalLinkRow,
   payload: GitHubIssuePayload,
   hash: string,
+  syncedAt: Date,
 ): Promise<GithubSyncOutput> {
   // row is linked -> external_id is the issue number.
   const issueNumber = row.external_id;
@@ -269,7 +285,7 @@ async function updateExisting(
   await withTransaction(pool, (c) =>
     updateLinkedContentHash(c, { trackId, adapterType: ADAPTER, contentHash: hash }),
   );
-  return okSynced(pool, trackId);
+  return okSynced(pool, trackId, syncedAt);
 }
 
 async function recoverPending(
@@ -280,6 +296,7 @@ async function recoverPending(
   row: TrackExternalLinkRow,
   payload: GitHubIssuePayload,
   hash: string,
+  syncedAt: Date,
 ): Promise<GithubSyncOutput> {
   // If the adapter's repo changed while this sync was pending, the marker
   // would be searched in (and any recreate would land in) the wrong repo.
@@ -317,7 +334,7 @@ async function recoverPending(
         error: 'GITHUB_UNKNOWN_ERROR: adopted issue could not be finalized; reconcile manually',
       };
     }
-    return okSynced(pool, trackId);
+    return okSynced(pool, trackId, syncedAt);
   }
 
   // Marker not found. A pending link only survives an AMBIGUOUS create

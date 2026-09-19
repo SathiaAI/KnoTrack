@@ -224,6 +224,19 @@ describe('createFetchGitHubClient — error mapping (PRD §4.13 prefixes)', () =
     }
   });
 
+  it('treats a 2xx create with malformed JSON as ambiguous (issue may exist)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(201, 'not json <<<'))),
+    );
+    const res = await client().createIssue('o/r', { title: 'T', body: 'B', state: 'open' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.startsWith('GITHUB_UNKNOWN_ERROR')).toBe(true);
+      expect(res.ambiguous).toBe(true);
+    }
+  });
+
   it('maps a network throw -> GITHUB_UNKNOWN_ERROR with ambiguous=true', async () => {
     vi.stubGlobal(
       'fetch',

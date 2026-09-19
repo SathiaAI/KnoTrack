@@ -360,8 +360,9 @@ export async function trackExistsInProject(
   return (result.rowCount ?? 0) > 0;
 }
 
-/** Stamps `tracks.last_github_sync_at = now()` after a successful GitHub
- * sync (T5.2). The column was added in migrations/005 for exactly this
+/** Stamps `tracks.last_github_sync_at` after a successful GitHub sync
+ * (T5.2), to the payload snapshot time `at`. The column was added in
+ * migrations/005 for exactly this
  * "most recent successful sync" watermark; SYNC_DRIFT (T6) reads it against
  * the track's most recent change. This does bump `updated_at` via the
  * table's trigger — so T6's SYNC_DRIFT must compare this watermark against
@@ -370,6 +371,14 @@ export async function trackExistsInProject(
  * the most recent change to the track). A completed sync is a real event on
  * the track, so bumping updated_at is acceptable here (unlike the 006
  * backfill, which suppressed the trigger because it changed nothing real). */
-export async function touchGithubSyncWatermark(db: Queryable, trackId: string): Promise<void> {
-  await db.query(`UPDATE tracks SET last_github_sync_at = now() WHERE id = $1`, [trackId]);
+export async function touchGithubSyncWatermark(
+  db: Queryable,
+  trackId: string,
+  at: Date,
+): Promise<void> {
+  // `at` is the payload SNAPSHOT time, not the completion time: an item that
+  // changed after the snapshot but before this write must still read as drift
+  // (updated_at > last_github_sync_at), so we stamp the state we actually
+  // pushed, not the later "now()".
+  await db.query(`UPDATE tracks SET last_github_sync_at = $2 WHERE id = $1`, [trackId, at]);
 }
