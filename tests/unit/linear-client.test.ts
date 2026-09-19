@@ -112,7 +112,7 @@ describe('createFetchLinearClient — request shape', () => {
 });
 
 describe('createFetchLinearClient — error mapping', () => {
-  it('maps a GraphQL 200-with-errors to LINEAR_UNKNOWN_ERROR, not ambiguous', async () => {
+  it('maps a GraphQL 200-with-errors on a MUTATION to ambiguous (may have committed)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -123,8 +123,49 @@ describe('createFetchLinearClient — error mapping', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error).toMatch(/^LINEAR_UNKNOWN_ERROR/);
-      expect(res.ambiguous).toBe(false);
+      // A mutation's opaque GraphQL error is NOT proof no write happened.
+      expect(res.ambiguous).toBe(true);
     }
+  });
+
+  it('maps a GraphQL 200-with-errors on a READ to non-ambiguous', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(resp(200, JSON.stringify({ errors: [{ message: 'bad query' }] }))),
+      ),
+    );
+    const res = await client().getWorkflowStates(TEAM);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.ambiguous).toBe(false);
+  });
+
+  it('keeps a 5xx AMBIGUOUS even when it carries a Retry-After header', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(503, 'unavailable', { 'retry-after': '5' }))),
+    );
+    const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      // Must NOT be reclassified as a definitive rate-limit.
+      expect(res.error).toMatch(/^LINEAR_UNKNOWN_ERROR/);
+      expect(res.ambiguous).toBe(true);
+    }
+  });
+
+  it('treats an explicit success:false mutation payload as DEFINITIVE (not ambiguous)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(200, JSON.stringify({ data: { issueCreate: { success: false, issue: null } } })),
+        ),
+      ),
+    );
+    const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.ambiguous).toBe(false);
   });
 
   it('maps a GraphQL rate-limit error to LINEAR_RATE_LIMITED', async () => {

@@ -742,7 +742,7 @@ Example operational-failure output:
 ```json
 { "ok": false, "error": "LINEAR_AUTH_FAILED: API key rejected" }
 ```
-`error` string prefixes: `LINEAR_AUTH_FAILED`, `LINEAR_NOT_FOUND` (team or issue not found), `LINEAR_TIMEOUT` (exceeded `KNOTRACK_LINEAR_SYNC_TIMEOUT_MS`, default 8000ms), `LINEAR_UNKNOWN_ERROR`.
+`error` string prefixes: `LINEAR_AUTH_FAILED`, `LINEAR_NOT_FOUND` (team or issue not found), `LINEAR_RATE_LIMITED`, `LINEAR_TIMEOUT` (exceeded `KNOTRACK_LINEAR_SYNC_TIMEOUT_MS`, default 8000ms), `LINEAR_STATE_CONFIG` (invalid `done_state_id`/`open_state_id`, or a done track whose team has no `completed` workflow state and no configured `done_state_id`), `LINEAR_UNKNOWN_ERROR`.
 
 Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no Linear credentials configured for this project); `422` (malformed uuid); `500`.
 

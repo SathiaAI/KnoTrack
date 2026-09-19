@@ -70,6 +70,15 @@ describe('linearPayloadContentHash', () => {
     const p = buildLinearPayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, []);
     expect(linearPayloadContentHash(p, 'open')).not.toBe(linearPayloadContentHash(p, 'done'));
   });
+
+  it('changes when a configured state override changes (so re-config re-syncs)', () => {
+    const p = buildLinearPayload({ id: TRACK_ID, title: 'T', status: 'done' }, []);
+    const a = linearPayloadContentHash(p, 'done', { doneStateId: 's-done' });
+    const b = linearPayloadContentHash(p, 'done', { doneStateId: 's-released' });
+    expect(a).not.toBe(b);
+    // and stable for the same override
+    expect(a).toBe(linearPayloadContentHash(p, 'done', { doneStateId: 's-done' }));
+  });
 });
 
 describe('stateIntentFor', () => {

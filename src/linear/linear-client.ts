@@ -100,6 +100,16 @@ function mapHttpError(
   bodyText: string,
 ): { error: string; ambiguous: boolean } {
   const detail = bodyText.slice(0, 300).replace(/\s+/g, ' ').trim();
+  // 5xx is checked FIRST: a 5xx may have committed the write server-side and
+  // then failed to respond, so it is ALWAYS ambiguous — even when it carries a
+  // Retry-After header (Codex PR #25: a 5xx+Retry-After must not be reclassified
+  // as a definitive rate-limit, or createFresh would clear the pending claim
+  // and the next sync could duplicate the issue).
+  if (status >= 500)
+    return {
+      error: `LINEAR_UNKNOWN_ERROR: HTTP ${status}${detail ? `: ${detail}` : ''}`,
+      ambiguous: true,
+    };
   if (status === 401 || status === 403)
     return { error: `LINEAR_AUTH_FAILED: ${detail || 'unauthorized'}`, ambiguous: false };
   if (status === 429 || headers.get('retry-after'))
@@ -110,16 +120,24 @@ function mapHttpError(
     return { error: `LINEAR_AUTH_FAILED: ${detail}`, ambiguous: false };
   if (status === 400 && isRateLimitedMessage(detail))
     return { error: `LINEAR_RATE_LIMITED: ${detail}`, ambiguous: false };
+  // Any other completed 4xx is a definitive rejection (no write) for a create.
   return {
     error: `LINEAR_UNKNOWN_ERROR: HTTP ${status}${detail ? `: ${detail}` : ''}`,
-    ambiguous: status >= 500,
+    ambiguous: false,
   };
 }
 
 /** Maps a GraphQL top-level `errors` array (returned with HTTP 200) to a
- * prefixed error. A rejected GraphQL request is transactional — nothing was
- * written — so ambiguous is always false here. */
-function mapGraphqlErrors(errors: unknown[]): { error: string; ambiguous: boolean } {
+ * prefixed error. Auth/rate-limit errors are DEFINITIVE (Linear rejected the
+ * request before applying it) → ambiguous:false. But a generic GraphQL error
+ * on a MUTATION is NOT proof that no write occurred — a response may carry both
+ * partial `data` and top-level `errors` once execution has begun (Codex PR #25)
+ * — so an opaque mutation error is ambiguous, keeping the pending link for
+ * marker recovery instead of clearing it and risking a duplicate. */
+function mapGraphqlErrors(
+  errors: unknown[],
+  isMutation: boolean,
+): { error: string; ambiguous: boolean } {
   const msg = errors
     .map((e) =>
       e && typeof e === 'object' && typeof (e as Record<string, unknown>).message === 'string'
@@ -143,7 +161,7 @@ function mapGraphqlErrors(errors: unknown[]): { error: string; ambiguous: boolea
     return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: false };
   if (isAuthMessage(haystack))
     return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous: false };
-  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: false };
+  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: isMutation };
 }
 
 function mapThrown(err: unknown): { error: string; ambiguous: boolean } {
@@ -199,7 +217,7 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       }
       const obj = (parsed ?? {}) as Record<string, unknown>;
       if (Array.isArray(obj.errors) && obj.errors.length > 0) {
-        const mapped = mapGraphqlErrors(obj.errors);
+        const mapped = mapGraphqlErrors(obj.errors, isMutation);
         return { ok: false, error: mapped.error, ambiguous: mapped.ambiguous };
       }
       const data = obj.data;
@@ -244,6 +262,17 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       };
     }
     const rec = payload as Record<string, unknown>;
+    // An explicit `success: false` in a well-formed payload is a DEFINITIVE
+    // rejection — Linear applied nothing — so it is not ambiguous; clearing the
+    // pending claim lets the next sync retry cleanly instead of wedging forever
+    // (Codex PR #25). Only an unexpected/incomplete shape stays ambiguous.
+    if (rec.success === false) {
+      return {
+        ok: false,
+        error: `LINEAR_UNKNOWN_ERROR: ${field} returned success:false (mutation rejected)`,
+        ambiguous: false,
+      };
+    }
     const ref = toRef(rec.issue);
     if (rec.success !== true || !ref) {
       return {

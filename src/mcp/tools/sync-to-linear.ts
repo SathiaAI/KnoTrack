@@ -145,7 +145,7 @@ export async function syncToLinearService(
   );
   const trackStatus = snap.track.status;
   const stateIntent = stateIntentFor(trackStatus);
-  const hash = linearPayloadContentHash(payload, stateIntent);
+  const hash = linearPayloadContentHash(payload, stateIntent, stateConfig);
 
   const client = clientFactory(apiKey, {
     timeoutMs: config.linearSyncTimeoutMs,
@@ -340,6 +340,9 @@ async function updateExisting(ctx: SyncCtx, row: TrackExternalLinkRow): Promise<
       trackId: ctx.trackId,
       adapterType: ADAPTER,
       contentHash: ctx.hash,
+      // Refresh the stored URL: a Linear issue's URL can change while its id
+      // stays stable (team-key/workspace-slug change).
+      externalUrl: res.value.url,
     }),
   );
   return okSynced(ctx.pool, ctx.trackId, ctx.syncedAt);

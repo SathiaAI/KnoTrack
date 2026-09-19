@@ -265,6 +265,29 @@ describe('kt_sync_to_linear — create / update / no-op', () => {
     expect(state.updateCalls).toHaveLength(1);
     expect(state.updateCalls[0]!.issueId).toBe('iss-1');
   });
+
+  it('refreshes the stored linear_issue_url when an update returns a changed URL', async () => {
+    const { project_id, track_id } = await makeProjectTrack();
+    await syncToLinearService(pool, config, { project_id, track_id }, makeFake().deps);
+    // change content so an update runs, and have the update return a new URL
+    await createItemService(pool, config, {
+      project_id,
+      track_id,
+      title: 'New item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+    const { deps } = makeFake({
+      updateIssue: (_s, issueId) => ({
+        ok: true,
+        value: { id: issueId, identifier: 'ENG-1', url: 'https://linear.app/new-slug/issue/ENG-1' },
+      }),
+    });
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res).toEqual({ ok: true });
+    const track = await getTrackService(pool, config, { project_id, track_id });
+    expect(track.track.linear_issue_url).toBe('https://linear.app/new-slug/issue/ENG-1');
+  });
 });
 
 describe('kt_sync_to_linear — workflow-state resolution', () => {

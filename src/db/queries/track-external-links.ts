@@ -114,13 +114,21 @@ export async function updateLinkedContentHash(
     trackId: string;
     adapterType: 'github' | 'linear';
     contentHash: string;
+    /** Optional refreshed external URL. When provided, external_url is
+     * updated too — a successful update returns the issue's current URL, which
+     * can change while the id stays stable (e.g. a Linear team-key/workspace
+     * slug change), so a linked row would otherwise keep exposing a stale URL
+     * through kt_get_track (Codex PR #25). Omitted (undefined) leaves the
+     * stored URL unchanged, preserving existing GitHub behavior. */
+    externalUrl?: string;
   },
 ): Promise<void> {
   await client.query(
     `UPDATE track_external_links
-       SET content_hash = $3
+       SET content_hash = $3,
+           external_url = COALESCE($4, external_url)
      WHERE track_id = $1 AND adapter_type = $2 AND sync_state = 'linked'`,
-    [input.trackId, input.adapterType, input.contentHash],
+    [input.trackId, input.adapterType, input.contentHash, input.externalUrl ?? null],
   );
 }
 

@@ -447,7 +447,7 @@ section tests the *detection logic itself*, which is triggered both inline by
 
 `kt_sync_to_linear(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a linear adapter is configured (a missing adapter is a `CONFLICT` error, not `{ok:false}`). Mirror of §15.
 
-**This build (T2.14 stub):** a _configured_ linear adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`linear sync is not available in this build`) — the success (`LNSY-01`) and operational-failure (`LNSY-04`/`LNSY-05`) rows below describe the T5.3 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
+**This build (T5.3, 2026-09-19):** external Linear sync is implemented — a configured linear adapter creates or updates a Linear Issue (`LNSY-01`), operational Linear failures return `{ok:false, error}` (`LNSY-04`/`LNSY-05`), and the missing-adapter `CONFLICT` rows hold. Verified offline (fake `LinearClient`, no network in CI); a real-workspace dogfood is the one remaining gate.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|

@@ -100,19 +100,28 @@ export function buildLinearPayload(track: TrackForLinear, items: ItemForLinear[]
   return { title, description };
 }
 
-/** sha256 of exactly what KnoTrack pushes to Linear: title, description, and
- * the abstract state intent (done|open). Including the intent — not a concrete
- * stateId — means a done/undone flip re-syncs while a team's specific state
- * UUIDs stay out of the hash (they differ per team and would cause needless
- * churn). Detects KnoTrack-side changes only. */
+/** sha256 of exactly what KnoTrack pushes to Linear: title, description, the
+ * abstract state intent (done|open), and the configured state overrides. The
+ * intent (not an auto-resolved stateId) keeps a team's auto-picked state UUIDs
+ * out of the hash — those differ per team and would cause needless churn — while
+ * a done/undone flip still re-syncs; the operator-configured done_state_id/
+ * open_state_id ARE included so changing them re-syncs. Detects KnoTrack-side
+ * changes only. */
 export function linearPayloadContentHash(
   payload: LinearPayload,
   stateIntent: 'done' | 'open',
+  stateConfig: { doneStateId?: string; openStateId?: string } = {},
 ): string {
   const canonical = JSON.stringify({
     title: payload.title,
     description: payload.description,
     state_intent: stateIntent,
+    // The configured overrides are part of what a sync would push: if a project
+    // is re-registered with a different done_state_id/open_state_id, the hash
+    // must change so the linked issue is re-synced (and the new override
+    // re-validated) instead of taking a false no-op path (Codex PR #25).
+    done_state_id: stateConfig.doneStateId ?? null,
+    open_state_id: stateConfig.openStateId ?? null,
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
