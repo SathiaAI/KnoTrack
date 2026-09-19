@@ -87,3 +87,20 @@ export async function updateAdapterEncryptedCredential(
     keyVersion,
   ]);
 }
+
+/** Existence-only precondition check: does this project have an adapter
+ * of the given type? Deliberately selects a constant, never any column —
+ * least of all `encrypted_credential` — because the sync-tool precondition
+ * path (kt_sync_to_github / kt_sync_to_linear) only needs to know whether
+ * a row exists, never its secret. */
+export async function adapterConfigured(
+  db: Queryable,
+  projectId: string,
+  type: 'github' | 'linear',
+): Promise<boolean> {
+  const result = await db.query(
+    `SELECT 1 FROM adapters WHERE project_id = $1 AND type = $2 LIMIT 1`,
+    [projectId, type],
+  );
+  return (result.rowCount ?? 0) > 0;
+}

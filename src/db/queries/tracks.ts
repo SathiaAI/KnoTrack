@@ -323,3 +323,39 @@ export async function listTracksForListing(
   );
   return result.rows;
 }
+
+/** Cheap project track count for kt_check_drift's stub scan: a plain
+ * COUNT(*) that does NOT join `track_readiness` (which aggregates every
+ * track's item completion and dependency state across the project). The
+ * stub returns an empty scan, so it only needs the total, not each
+ * track's derived status; the readiness join risked doing much of an
+ * uncapped full-project computation — and hitting the statement timeout
+ * on a large project — merely to obtain `total_track_count` (Codex PR #22
+ * review). */
+export async function countTracksForProject(db: Queryable, projectId: string): Promise<number> {
+  const result = await db.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM tracks WHERE project_id = $1`,
+    [projectId],
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+/** Existence-only, project-scoped track check for the sync-tool stub
+ * precondition path. Deliberately does NOT join `track_readiness` (which
+ * aggregates items across every track and computes the recursive
+ * dependency closure): the sync stubs discard all readiness fields and
+ * only need to confirm the track exists and belongs to the project, so
+ * the readiness join risked hitting the statement timeout on a large
+ * project before the tool could return its CONFLICT (Codex PR #22
+ * review). */
+export async function trackExistsInProject(
+  db: Queryable,
+  projectId: string,
+  trackId: string,
+): Promise<boolean> {
+  const result = await db.query(`SELECT 1 FROM tracks WHERE id = $1 AND project_id = $2 LIMIT 1`, [
+    trackId,
+    projectId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}

@@ -415,13 +415,15 @@ section tests the *detection logic itself*, which is triggered both inline by
 
 ## 15. `kt_sync_to_github`
 
-`kt_sync_to_github(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a github adapter is configured for the project.
+`kt_sync_to_github(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a github adapter is configured for the project (a missing adapter is a `CONFLICT` error, not `{ok:false}`).
+
+**This build (T2.13 stub):** a _configured_ github adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`github sync is not available in this build`) — the success (`GHSY-01`) and operational-failure (`GHSY-04`/`GHSY-05`) rows below describe the T5.2 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
 | GHSY-01 | kt_sync_to_github | Positive | Project has a working github adapter configured; track exists | Valid `project_id`, `track_id` | 200; `{ok:true}` (or documented success payload); no credential in response |
-| GHSY-02 | kt_sync_to_github | Negative (clean error, not crash) | Project has **no** github adapter configured | Valid `project_id`, `track_id` | 200 (tool-level) with `{ok:false, error:"..."}` — NOT a 500, NOT an unhandled exception, NOT a generic 400 that hides the real cause |
-| GHSY-03 | kt_sync_to_github | Negative | Project has a linear adapter but no github adapter | Same call | `{ok:false, error:"..."}` clearly indicating github specifically is not configured, not a generic failure |
+| GHSY-02 | kt_sync_to_github | Negative (clean error, not crash) | Project has **no** github adapter configured | Valid `project_id`, `track_id` | `CONFLICT` (409) via the standard error envelope, message `github adapter not configured` — a clean tool-level error, NOT a 500, NOT an unhandled exception, NOT a generic 400 that hides the real cause |
+| GHSY-03 | kt_sync_to_github | Negative | Project has a linear adapter but no github adapter | Same call | `CONFLICT` (409), message `github adapter not configured` — names github specifically, not a generic failure |
 | GHSY-04 | kt_sync_to_github | Negative | github adapter configured but its credential is invalid/expired at the remote end | Same call | `{ok:false, error:"..."}` — the remote auth failure is caught and surfaced cleanly, not a raw stack trace or crash |
 | GHSY-05 | kt_sync_to_github | Negative | github adapter configured; remote GitHub API is unreachable/times out | Same call | `{ok:false, error:"..."}` — network failure handled gracefully |
 | GHSY-06 | kt_sync_to_github | Negative | None | `track_id` omitted | 400 |
@@ -437,13 +439,15 @@ section tests the *detection logic itself*, which is triggered both inline by
 
 ## 16. `kt_sync_to_linear`
 
-`kt_sync_to_linear(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a linear adapter is configured. Mirror of §15.
+`kt_sync_to_linear(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a linear adapter is configured (a missing adapter is a `CONFLICT` error, not `{ok:false}`). Mirror of §15.
+
+**This build (T2.14 stub):** a _configured_ linear adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`linear sync is not available in this build`) — the success (`LNSY-01`) and operational-failure (`LNSY-04`/`LNSY-05`) rows below describe the T5.3 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
 | LNSY-01 | kt_sync_to_linear | Positive | Project has a working linear adapter configured; track exists | Valid `project_id`, `track_id` | 200; `{ok:true}`; no credential in response |
-| LNSY-02 | kt_sync_to_linear | Negative (clean error, not crash) | Project has **no** linear adapter configured | Valid `project_id`, `track_id` | `{ok:false, error:"..."}`, not a crash/500 |
-| LNSY-03 | kt_sync_to_linear | Negative | Project has a github adapter but no linear adapter | Same call | `{ok:false, error:"..."}` naming linear specifically |
+| LNSY-02 | kt_sync_to_linear | Negative (clean error, not crash) | Project has **no** linear adapter configured | Valid `project_id`, `track_id` | `CONFLICT` (409), message `linear adapter not configured` — a clean tool-level error, not a crash/500 |
+| LNSY-03 | kt_sync_to_linear | Negative | Project has a github adapter but no linear adapter | Same call | `CONFLICT` (409), message `linear adapter not configured` — naming linear specifically |
 | LNSY-04 | kt_sync_to_linear | Negative | linear adapter configured but credential invalid/expired | Same call | `{ok:false, error:"..."}` clean |
 | LNSY-05 | kt_sync_to_linear | Negative | linear adapter configured; remote Linear API unreachable/times out | Same call | `{ok:false, error:"..."}` clean |
 | LNSY-06 | kt_sync_to_linear | Negative | None | `track_id` omitted | 400 |
@@ -497,14 +501,14 @@ that applies across all 14 tools.
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
-| ADAPT-01 | kt_sync_to_github | Negative | No github adapter configured | Call `kt_sync_to_github` | `{ok:false, error:"..."}`, HTTP 200 at the transport level (tool-level failure, not transport failure) or a documented 4xx — but never a 500/unhandled exception (duplicate of GHSY-02, listed here for the adapter-section completeness the task calls for) |
-| ADAPT-02 | kt_sync_to_linear | Negative | No linear adapter configured | Call `kt_sync_to_linear` | `{ok:false, error:"..."}`, clean (duplicate of LNSY-02) |
-| ADAPT-03 | kt_sync_to_github | Negative | Neither adapter configured at all | Call `kt_sync_to_github` | `{ok:false, error:"..."}` — same clean failure even in the "no adapters of any kind" case, not a different/worse error path |
-| ADAPT-04 | kt_sync_to_linear | Negative | Neither adapter configured at all | Call `kt_sync_to_linear` | `{ok:false, error:"..."}` clean |
+| ADAPT-01 | kt_sync_to_github | Negative | No github adapter configured | Call `kt_sync_to_github` | `CONFLICT` (409, `github adapter not configured`) surfaced as a tool-level `isError` result over an HTTP-200 transport (a tool-level failure, not a transport failure) — never a 500/unhandled exception (duplicate of GHSY-02, listed here for the adapter-section completeness the task calls for) |
+| ADAPT-02 | kt_sync_to_linear | Negative | No linear adapter configured | Call `kt_sync_to_linear` | `CONFLICT` (409), `linear adapter not configured`, clean (duplicate of LNSY-02) |
+| ADAPT-03 | kt_sync_to_github | Negative | Neither adapter configured at all | Call `kt_sync_to_github` | `CONFLICT` (409), `github adapter not configured` — same clean failure even in the "no adapters of any kind" case, not a different/worse error path |
+| ADAPT-04 | kt_sync_to_linear | Negative | Neither adapter configured at all | Call `kt_sync_to_linear` | `CONFLICT` (409), `linear adapter not configured`, clean |
 | ADAPT-05 | **All 14 tools** | Negative (credential-leakage sweep) | Project registered with `adapters={github:{token:"ghp_SECRETVALUE..."}, linear:{token:"lin_SECRETVALUE..."}}` | Run one representative successful call to each of the 14 tools against this project (register, get_status, list_tracks, get_track, get_next_steps, create_track, create_item, record_session_summary, record_decision, update_item_status, check_drift, render_roadmap, sync_to_github, sync_to_linear) | For every single response body, the raw JSON contains neither `ghp_SECRETVALUE...` nor `lin_SECRETVALUE...` nor any ≥8-character substring of either, in any field including nested objects, error messages, and echoed `source_ref`/`adapters` structures |
 | ADAPT-06 | kt_get_project_status | Negative (credential-leakage, error path) | Adapter credential configured; then trigger an internal error path if one exists (e.g. malformed downstream state) | Call that surfaces an error | Even error responses/stack traces (if any are exposed) contain no credential material |
 | ADAPT-07 | kt_register_project | Negative (credential-leakage, at creation) | None | Register a project with adapter credentials | The `{project_id}` response itself contains no credential echo, not even partially masked-but-derivable (e.g. not last-4-plus-length in a way that narrows brute force meaningfully beyond what's operationally necessary) |
-| ADAPT-08 | kt_sync_to_github / kt_sync_to_linear | Negative | Adapter configured for github only; caller calls `kt_sync_to_linear` | Call `kt_sync_to_linear` | `{ok:false, error:"..."}` — must not fall back to or accidentally use the github adapter, and must not error in a way that reveals whether a *different* adapter is configured beyond what's necessary |
+| ADAPT-08 | kt_sync_to_github / kt_sync_to_linear | Negative | Adapter configured for github only; caller calls `kt_sync_to_linear` | Call `kt_sync_to_linear` | `CONFLICT` (409), `linear adapter not configured` — must not fall back to or accidentally use the github adapter, and must not error in a way that reveals whether a *different* adapter is configured beyond what's necessary |
 | ADAPT-09 | kt_sync_to_github | Positive → then Negative | github adapter configured and working; sync succeeds once | Immediately revoke/invalidate the credential at the remote end, then call `kt_sync_to_github` again | Second call returns `{ok:false, error:"..."}` cleanly; does not crash, does not return a stale cached `{ok:true}` |
 
 ---

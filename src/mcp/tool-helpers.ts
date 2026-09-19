@@ -85,20 +85,3 @@ export async function runTool<T extends Record<string, unknown>>(
     };
   }
 }
-
-/** A "not yet implemented" stub result for the 5 tools out of scope for
- * this build (see the tool table in docs/TRD.md §2 / the repo layout). */
-export function notImplementedResult(toolName: string): ToolTextResult {
-  const envelope = {
-    error: {
-      code: 'INTERNAL_ERROR' as const,
-      http_status_equivalent: 500,
-      message: `${toolName} is registered but not yet implemented in this build`,
-      details: { tool: toolName },
-    },
-  };
-  return {
-    content: [{ type: 'text', text: JSON.stringify(envelope) }],
-    isError: true,
-  };
-}

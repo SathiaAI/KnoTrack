@@ -60,6 +60,11 @@ next call rather than reusing fixture data:
    matches the same stub shape `T3.5` exercised. This satisfies `T4.2`'s
    2026-08-28-corrected acceptance: both clients are checked against the
    stub response, not a real drift answer (`T6` is not built yet).
+   (Historical note, 2026-09-18: `kt_check_drift` was reimplemented for
+   T2.11 to return a success empty scan — `flags: []`, `note: "no
+   heuristics configured"` — instead of the stub error shown above; the
+   payload above is preserved as T4.2-time evidence, not current
+   behavior.)
 
 All six succeeded with real payloads (not `isError: true`), and none
 required any server-side change — `T4.1`'s "zero server changes"

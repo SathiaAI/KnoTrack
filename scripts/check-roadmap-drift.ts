@@ -22,7 +22,7 @@
 //      changed without docs/ROADMAP.md changing in the same diff. This
 //      won't catch everything and isn't meant to — it's a cheap nudge,
 //      not a semantic guarantee.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,15 @@ const MARKER_REGEX = /<!-- STUB_TOOLS: ([^>]+?) -->/;
  * `docs/ROADMAP.md`'s marker claims.
  */
 function getStubToolNamesFromCode(): string[] {
+  // All 14 tools now ship real implementations, so src/mcp/tools/stubs.ts
+  // was removed when the last three (kt_check_drift, kt_sync_to_github,
+  // kt_sync_to_linear) met their T2.11/T2.13/T2.14 acceptance. Zero stubs
+  // is the correct terminal state — the marker in docs/ROADMAP.md must be
+  // `none` to match. If a stub tool is ever reintroduced, this file
+  // returns and the parser below resumes.
+  if (!existsSync(STUBS_FILE)) {
+    return [];
+  }
   const src = readFileSync(STUBS_FILE, 'utf8');
   const names = [...src.matchAll(/name:\s*'(kt_[a-z_]+)'/g)]
     .map((m) => m[1])
@@ -74,7 +83,14 @@ function getStubToolNamesFromRoadmap(): string[] {
         `paragraph rather than removing this check.`,
     );
   }
-  return marker
+  const trimmed = marker.trim();
+  // `none` (or an empty list) is the terminal 14/14-real state — no stub
+  // tools remain, matching getStubToolNamesFromCode returning [] once
+  // src/mcp/tools/stubs.ts has been removed.
+  if (trimmed === '' || trimmed.toLowerCase() === 'none') {
+    return [];
+  }
+  return trimmed
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)

@@ -213,8 +213,8 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
   // JSON-RPC path (the same route http.test.ts's other "real tool call"
   // tests already use) specifically to catch a tool being left stubbed
   // after its implementation lands — the class of bug the tests above
-  // this one (checking tools/list names, and that kt_check_drift *is*
-  // still a stub) cannot detect on their own.
+  // this one (checking tools/list names, and kt_check_drift's real
+  // empty-scan result) cannot detect on their own.
   it('positive: kt_record_decision is wired to its real implementation, not the stub', async () => {
     const { project_id } = await registerProjectService(pool, config, {
       name: 'Record decision wiring check',
@@ -362,14 +362,16 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
     expect(item.rows[0]?.status).toBe('in_progress');
   });
 
-  it('stub tools respond with a clear not-implemented error rather than silently succeeding', async () => {
+  it('kt_check_drift returns a success empty scan over the real HTTP route (T2.11 stub), and still surfaces a KtError envelope on failure', async () => {
     const { project_id } = await registerProjectService(pool, config, {
-      name: 'For stub test',
+      name: 'For check_drift stub test',
       source_type: 'local',
       source_ref: `/tmp/${crypto.randomUUID()}`,
       adapters: undefined,
     });
-    const response = await app.inject({
+
+    // Success path: a well-formed empty scan, not an error.
+    const okResponse = await app.inject({
       method: 'POST',
       url: '/mcp',
       headers: {
@@ -379,14 +381,41 @@ describe('POST /mcp closed input schemas (TRD §3.0)', () => {
       },
       payload: rpcCall('kt_check_drift', { project_id }),
     });
-    const body = parseSseBody(response.body) as {
+    const okBody = parseSseBody(okResponse.body) as {
+      result: {
+        isError?: boolean;
+        structuredContent?: { flags: unknown[]; scanned_track_count: number; note: string };
+      };
+    };
+    expect(okBody.result.isError).toBeUndefined();
+    expect(okBody.result.structuredContent?.flags).toEqual([]);
+    expect(okBody.result.structuredContent?.scanned_track_count).toBe(0);
+    expect(okBody.result.structuredContent?.note).toBe('no heuristics configured');
+
+    // Failure path: an unknown project is a NOT_FOUND KtError, serialized
+    // as the §3.1 error envelope with isError true — retains coverage of
+    // a standard MCP-level tool error over the real HTTP route (distinct
+    // from an HTTP transport status).
+    const errResponse = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${config.apiTokens[0]}`,
+      },
+      payload: rpcCall('kt_check_drift', {
+        project_id: '99999999-9999-4999-8999-999999999999',
+      }),
+    });
+    const errBody = parseSseBody(errResponse.body) as {
       result: { isError: boolean; content: Array<{ text: string }> };
     };
-    expect(body.result.isError).toBe(true);
-    const envelope = JSON.parse(body.result.content[0]?.text ?? '{}') as {
-      error: { message: string };
+    expect(errBody.result.isError).toBe(true);
+    const envelope = JSON.parse(errBody.result.content[0]?.text ?? '{}') as {
+      error: { code: string; message: string };
     };
-    expect(envelope.error.message).toMatch(/not yet implemented/i);
+    expect(envelope.error.code).toBe('NOT_FOUND');
   });
 
   // CodeRabbit raised a Critical finding that every tool handler casting
