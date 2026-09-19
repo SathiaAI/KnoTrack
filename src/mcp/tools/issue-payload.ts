@@ -71,7 +71,7 @@ export function buildIssuePayload(track: TrackForIssue, items: ItemForIssue[]): 
       ? `\n\n_… ${ordered.length - shown.length} more item(s) not shown._`
       : '';
 
-  const bodyFull = [
+  const content = [
     '_Synced from KnoTrack — KnoTrack owns this issue’s title, body, and open/closed state and will overwrite manual edits to them._',
     '',
     `**Track status:** \`${track.status}\``,
@@ -79,13 +79,19 @@ export function buildIssuePayload(track: TrackForIssue, items: ItemForIssue[]): 
     '### Items',
     checklist.length > 0 ? checklist : '_No items yet._',
     elided,
-    '',
-    trackMarker(track.id),
   ].join('\n');
+
+  // The hidden recovery marker MUST survive truncation: if a very long body
+  // were cut with the marker at the end, crash recovery could not find the
+  // issue and would create a duplicate. So reserve room for the marker and
+  // truncate the content, never the marker.
+  const markerBlock = `\n\n${trackMarker(track.id)}`;
+  const room = Math.max(0, BODY_MAX - markerBlock.length);
+  const body = truncate(content, room) + markerBlock;
 
   const payload: IssuePayload = {
     title,
-    body: truncate(bodyFull, BODY_MAX),
+    body,
     state: isDone ? 'closed' : 'open',
   };
   if (isDone) {

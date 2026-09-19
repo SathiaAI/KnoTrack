@@ -24,12 +24,12 @@ import { syncToGithubInputSchema, type SyncToGithubInput } from '../../schemas/t
 import { runTool } from '../tool-helpers.js';
 import { conflict, notFound } from '../errors.js';
 import { findActiveProjectById } from '../../db/queries/projects.js';
-import { findTrackById } from '../../db/queries/tracks.js';
+import { findTrackById, touchGithubSyncWatermark } from '../../db/queries/tracks.js';
 import { listItemsByTrack } from '../../db/queries/items.js';
 import { getAdapterForProject } from '../../db/queries/adapters.js';
 import { decryptCredential } from '../../crypto/credential-cipher.js';
 import { buildIssuePayload, payloadContentHash, trackMarker } from './issue-payload.js';
-import { withTransaction } from '../../db/tx.js';
+import { withReadSnapshot, withTransaction } from '../../db/tx.js';
 import {
   claimPendingLink,
   clearPendingLink,
@@ -108,11 +108,23 @@ export async function syncToGithubService(
   //    surfaces as INTERNAL_ERROR via runTool — never leaks the token).
   const token = decryptCredential(adapter.encrypted_credential, config.encryptionKey);
 
-  // 4. Deterministic payload + no-op hash.
-  const items = await listItemsByTrack(pool, track.id);
+  // 4. Deterministic payload + no-op hash. Read the track and its items in
+  //    ONE consistent snapshot so the rendered payload (and its hash) can't
+  //    mix a pre- and post-change view if items change mid-call.
+  const snap = await withReadSnapshot(pool, async (c) => {
+    const t = await findTrackById(c, input.project_id, input.track_id);
+    return { track: t, items: t ? await listItemsByTrack(c, t.id) : [] };
+  });
+  if (!snap.track) {
+    // Track deleted between the existence check and here — treat as not found.
+    throw notFound('track not found', {
+      project_id: input.project_id,
+      track_id: input.track_id,
+    });
+  }
   const payload = buildIssuePayload(
-    { id: track.id, title: track.title, status: track.status },
-    items.map((i) => ({
+    { id: snap.track.id, title: snap.track.title, status: snap.track.status },
+    snap.items.map((i) => ({
       title: i.title,
       status: i.status,
       sequence_position: i.sequence_position,
@@ -149,7 +161,8 @@ export async function syncToGithubService(
 
   switch (decision.kind) {
     case 'noop':
-      return { ok: true };
+      // Nothing to push, but we confirmed the issue is in sync -> watermark.
+      return okSynced(pool, track.id);
     case 'repo_changed':
       return {
         ok: false,
@@ -167,6 +180,14 @@ export async function syncToGithubService(
     case 'pending':
       return recoverPending(pool, client, repo, track.id, decision.row, payload, hash);
   }
+}
+
+/** Records the sync watermark and returns success. Called on every ok:true
+ * path (create, update, no-op, adopt) so tracks.last_github_sync_at always
+ * reflects the most recent confirmed sync (T5.2; SYNC_DRIFT input for T6). */
+async function okSynced(pool: Pool, trackId: string): Promise<GithubSyncOutput> {
+  await withTransaction(pool, (c) => touchGithubSyncWatermark(c, trackId));
+  return { ok: true };
 }
 
 type Decision =
@@ -223,7 +244,7 @@ async function createFresh(
         'GITHUB_UNKNOWN_ERROR: issue created but its link could not be finalized; reconcile manually',
     };
   }
-  return { ok: true };
+  return okSynced(pool, trackId);
 }
 
 async function updateExisting(
@@ -253,7 +274,7 @@ async function updateExisting(
   await withTransaction(pool, (c) =>
     updateLinkedContentHash(c, { trackId, adapterType: ADAPTER, contentHash: hash }),
   );
-  return { ok: true };
+  return okSynced(pool, trackId);
 }
 
 async function recoverPending(
@@ -265,6 +286,15 @@ async function recoverPending(
   payload: GitHubIssuePayload,
   hash: string,
 ): Promise<GithubSyncOutput> {
+  // If the adapter's repo changed while this sync was pending, the marker
+  // would be searched in (and any recreate would land in) the wrong repo.
+  // Refuse until the repository change is resolved.
+  if (row.repo_identity !== repo) {
+    return {
+      ok: false,
+      error: `GITHUB_UNKNOWN_ERROR: a sync is pending for this track against ${row.repo_identity}, but the adapter is now configured for ${repo}; resolve the repository change before retrying`,
+    };
+  }
   const found = await client.findIssueByMarker(repo, trackMarker(trackId));
   if (!found.ok) {
     // Couldn't even run the recovery search -> stay pending, ask to retry.
@@ -292,7 +322,7 @@ async function recoverPending(
         error: 'GITHUB_UNKNOWN_ERROR: adopted issue could not be finalized; reconcile manually',
       };
     }
-    return { ok: true };
+    return okSynced(pool, trackId);
   }
 
   // Marker not found. Search is eventually consistent, so only treat a miss

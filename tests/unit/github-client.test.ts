@@ -103,37 +103,84 @@ describe('createFetchGitHubClient — request shape', () => {
 
     const res = await client().findIssueByMarker('o/r', marker);
     expect(res).toEqual({ ok: true, value: { number: '2', html_url: 'u2' } });
-    expect(fetchMock.mock.calls[0]![0]).toContain('/search/issues?q=');
+    const url = fetchMock.mock.calls[0]![0];
+    expect(url).toContain('/search/issues?q=');
+    // excludes pull requests
+    expect(decodeURIComponent(url)).toContain('type:issue');
   });
 
-  it('findIssueByMarker returns null when no body matches', async () => {
+  it('findIssueByMarker returns null when a COMPLETE search finds no match', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
         Promise.resolve(
-          resp(200, JSON.stringify({ items: [{ number: 1, html_url: 'u', body: 'nope' }] })),
+          resp(
+            200,
+            JSON.stringify({
+              total_count: 1,
+              incomplete_results: false,
+              items: [{ number: 1, html_url: 'u', body: 'nope' }],
+            }),
+          ),
         ),
       ),
     );
     const res = await client().findIssueByMarker('o/r', '<!-- knotrack:track:zzz -->');
     expect(res).toEqual({ ok: true, value: null });
   });
+
+  it('findIssueByMarker reports unconfirmed (not null) when the search is incomplete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(200, JSON.stringify({ total_count: 0, incomplete_results: true, items: [] })),
+        ),
+      ),
+    );
+    const res = await client().findIssueByMarker('o/r', '<!-- knotrack:track:zzz -->');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.ambiguous).toBe(true);
+  });
+
+  it('findIssueByMarker reports unconfirmed when more matches exist than were fetched', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(
+            200,
+            JSON.stringify({
+              total_count: 50,
+              incomplete_results: false,
+              items: [{ number: 1, html_url: 'u', body: 'nope' }],
+            }),
+          ),
+        ),
+      ),
+    );
+    const res = await client().findIssueByMarker('o/r', '<!-- knotrack:track:zzz -->');
+    expect(res.ok).toBe(false);
+  });
 });
 
 describe('createFetchGitHubClient — error mapping (PRD §4.13 prefixes)', () => {
-  const cases: Array<[number, Record<string, string>, string]> = [
-    [401, {}, 'GITHUB_AUTH_FAILED'],
-    [403, { 'x-ratelimit-remaining': '0' }, 'GITHUB_RATE_LIMITED'],
-    [403, { 'retry-after': '60' }, 'GITHUB_RATE_LIMITED'],
-    [403, {}, 'GITHUB_AUTH_FAILED'],
-    [404, {}, 'GITHUB_NOT_FOUND'],
-    [422, {}, 'GITHUB_UNKNOWN_ERROR'],
-    [429, {}, 'GITHUB_RATE_LIMITED'],
-    [500, {}, 'GITHUB_UNKNOWN_ERROR'],
+  const cases: Array<[number, Record<string, string>, string, boolean]> = [
+    // [status, headers, prefix, ambiguous]
+    [401, {}, 'GITHUB_AUTH_FAILED', false],
+    [403, { 'x-ratelimit-remaining': '0' }, 'GITHUB_RATE_LIMITED', false],
+    [403, { 'retry-after': '60' }, 'GITHUB_RATE_LIMITED', false],
+    [403, {}, 'GITHUB_AUTH_FAILED', false],
+    [404, {}, 'GITHUB_NOT_FOUND', false],
+    [422, {}, 'GITHUB_UNKNOWN_ERROR', false],
+    [429, {}, 'GITHUB_RATE_LIMITED', false],
+    // 5xx is ambiguous: the create may have landed server-side.
+    [500, {}, 'GITHUB_UNKNOWN_ERROR', true],
+    [503, {}, 'GITHUB_UNKNOWN_ERROR', true],
   ];
 
-  for (const [status, headers, prefix] of cases) {
-    it(`maps HTTP ${status} -> ${prefix} (ambiguous=false, no token leak)`, async () => {
+  for (const [status, headers, prefix, ambiguous] of cases) {
+    it(`maps HTTP ${status} -> ${prefix} (ambiguous=${ambiguous}, no token leak)`, async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn(() =>
@@ -144,11 +191,25 @@ describe('createFetchGitHubClient — error mapping (PRD §4.13 prefixes)', () =
       expect(res.ok).toBe(false);
       if (!res.ok) {
         expect(res.error.startsWith(prefix)).toBe(true);
-        expect(res.ambiguous).toBe(false);
+        expect(res.ambiguous).toBe(ambiguous);
         expect(res.error).not.toContain(TOKEN);
       }
     });
   }
+
+  it('maps a 403 secondary-rate-limit body -> GITHUB_RATE_LIMITED (not auth failure)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          resp(403, JSON.stringify({ message: 'You have exceeded a secondary rate limit' }), {}),
+        ),
+      ),
+    );
+    const res = await client().createIssue('o/r', { title: 'T', body: 'B', state: 'open' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.startsWith('GITHUB_RATE_LIMITED')).toBe(true);
+  });
 
   it('maps an AbortError (timeout) -> GITHUB_TIMEOUT with ambiguous=true', async () => {
     vi.stubGlobal(

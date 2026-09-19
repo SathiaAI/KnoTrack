@@ -157,6 +157,10 @@ describe('kt_sync_to_github — create / update / no-op', () => {
 
     const track = await getTrackService(pool, config, { project_id, track_id });
     expect(track.track.github_issue_url).toBe(`https://github.com/${REPO}/issues/1`);
+
+    // a successful sync stamps the watermark (T5.2; SYNC_DRIFT input)
+    const wm = await pool.query(`SELECT last_github_sync_at FROM tracks WHERE id = $1`, [track_id]);
+    expect(wm.rows[0].last_github_sync_at).not.toBeNull();
   });
 
   it('is a no-op on an unchanged re-sync (no second HTTP call)', async () => {
@@ -347,6 +351,23 @@ describe('kt_sync_to_github — durable creation-intent / recovery', () => {
     const res = await syncToGithubService(pool, config, { project_id, track_id }, deps);
     expect(res.ok).toBe(false);
     expect(String(res.error)).toMatch(/retry shortly/);
+    expect(state.createCalls).toHaveLength(0);
+    expect((await linkRow(track_id))?.sync_state).toBe('pending');
+  });
+
+  it('refuses recovery when the adapter repo changed while a sync was pending (no wrong-repo search/recreate)', async () => {
+    const { project_id, track_id } = await makeProjectTrack({ repo: REPO });
+    // pending row bound to a DIFFERENT repo than the adapter now points at
+    await pool.query(
+      `INSERT INTO track_external_links (track_id, adapter_type, sync_state, repo_identity, operation_id, created_at)
+       VALUES ($1, 'github', 'pending', 'SathiaAI/OldRepo', $2, now() - interval '5 minutes')`,
+      [track_id, randomUUID()],
+    );
+    const { state, deps } = makeFake();
+    const res = await syncToGithubService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toMatch(/resolve the repository change/);
+    expect(state.findCalls).toHaveLength(0); // never searched the wrong repo
     expect(state.createCalls).toHaveLength(0);
     expect((await linkRow(track_id))?.sync_state).toBe('pending');
   });

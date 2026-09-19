@@ -53,7 +53,7 @@ describe('buildIssuePayload', () => {
     expect(payload.title).toHaveLength(256);
   });
 
-  it('truncates the body to GitHub’s 65,536-char cap', () => {
+  it('truncates the body to GitHub’s 65,536-char cap but always keeps the recovery marker', () => {
     const many = items(
       ...Array.from(
         { length: 400 },
@@ -62,6 +62,10 @@ describe('buildIssuePayload', () => {
     );
     const payload = buildIssuePayload({ id: TRACK_ID, title: 'T', status: 'on_track' }, many);
     expect(payload.body.length).toBeLessThanOrEqual(65_536);
+    // Critical: an over-long body must NOT truncate away the marker, or crash
+    // recovery could not find the issue and would duplicate it.
+    expect(payload.body).toContain(trackMarker(TRACK_ID));
+    expect(payload.body.endsWith(trackMarker(TRACK_ID))).toBe(true);
   });
 
   it('caps the rendered checklist and notes the elision', () => {

@@ -16,12 +16,13 @@ harness — not just one vendor's tool.
 
 ## Status
 
-Pre-release, v0.1.0. 12 of the 14 planned tools are fully implemented and
-dogfooded (KnoTrack tracks its own build using itself — see
+Pre-release, v0.1.0. 12 of the 14 planned tools are fully implemented; 11 of
+those are dogfooded (KnoTrack tracks its own build using itself — see
 [`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1).
-`kt_sync_to_github` is implemented as of T5.2 (2026-09-19): idempotent
-one-way sync of a track to a GitHub Issue, offline-verified, with its one
-remaining gate a real-repo dogfood run. The remaining 2 ship as stub
+`kt_sync_to_github` is implemented as of T5.2 (2026-09-19) — idempotent
+one-way sync of a track to a GitHub Issue — and **offline-verified**, but not
+yet dogfooded: a real-repo dogfood run is its one remaining gate. The
+remaining 2 ship as stub
 slices: `kt_check_drift` returns a well-formed empty scan (real drift
 heuristics land in T6), and `kt_sync_to_linear` validates its inputs and
 the adapter precondition, returning a clear `CONFLICT` ("adapter not

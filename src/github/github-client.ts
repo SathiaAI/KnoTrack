@@ -53,20 +53,26 @@ export interface GitHubClientOptions {
 
 export type GitHubClientFactory = (token: string, opts: GitHubClientOptions) => GitHubClient;
 
-function isRateLimited(status: number, headers: Headers): boolean {
+function isRateLimited(status: number, headers: Headers, bodyText: string): boolean {
   if (status === 429) return true;
   if (status === 403) {
     if (headers.get('retry-after')) return true;
     if (headers.get('x-ratelimit-remaining') === '0') return true;
+    // Secondary rate limits return 403 with a body message rather than the
+    // primary-limit headers — treat those as rate-limited (retryable), not
+    // as an auth failure.
+    if (/secondary rate limit|\brate limit\b/i.test(bodyText)) return true;
   }
   return false;
 }
 
 /** Maps a completed HTTP response (non-2xx) to a prefixed error string plus
- * the ambiguity flag. A response means the request reached GitHub, so a
- * create that got any response did NOT create an issue (GitHub rejected
- * it): ambiguous=false for every mapped status here. Only never-completed
- * requests (timeout/network) are ambiguous, handled by the caller's catch. */
+ * the ambiguity flag. A 4xx means GitHub rejected the request, so a create
+ * that got one did NOT create an issue (ambiguous=false). A 5xx is
+ * different: GitHub may have created the issue and then failed to respond
+ * cleanly, so a create that got a 5xx is AMBIGUOUS — the caller must keep
+ * its pending link for marker recovery rather than recreating. Timeouts and
+ * network errors are handled as ambiguous by the caller's catch. */
 function mapErrorResponse(
   status: number,
   headers: Headers,
@@ -78,17 +84,18 @@ function mapErrorResponse(
   const detail = bodyText.slice(0, 300).replace(/\s+/g, ' ').trim();
   if (status === 401)
     return { error: `GITHUB_AUTH_FAILED: ${detail || 'unauthorized'}`, ambiguous: false };
-  if (isRateLimited(status, headers))
+  if (isRateLimited(status, headers, bodyText))
     return { error: `GITHUB_RATE_LIMITED: ${detail || 'rate limit exceeded'}`, ambiguous: false };
   if (status === 403)
     return { error: `GITHUB_AUTH_FAILED: ${detail || 'forbidden'}`, ambiguous: false };
   if (status === 404)
     return { error: `GITHUB_NOT_FOUND: ${detail || 'not found'}`, ambiguous: false };
   // No dedicated validation prefix in the PRD's closed set; 422 and any
-  // other client/server status fold into UNKNOWN with GitHub's own message.
+  // other status fold into UNKNOWN with GitHub's own message. 5xx is
+  // ambiguous for the create path (the write may have landed server-side).
   return {
     error: `GITHUB_UNKNOWN_ERROR: HTTP ${status}${detail ? `: ${detail}` : ''}`,
-    ambiguous: false,
+    ambiguous: status >= 500,
   };
 }
 
@@ -198,17 +205,17 @@ export function createFetchGitHubClient(token: string, opts: GitHubClientOptions
     },
 
     async findIssueByMarker(repo, marker) {
-      // Recovery-only. GitHub search is eventually consistent, so the caller
-      // must treat a null result together with the pending link's age, never
-      // as immediate proof no issue exists.
-      const q = encodeURIComponent(`repo:${repo} in:body "${marker}"`);
-      const res = await send('GET', `${GITHUB_API}/search/issues?q=${q}&per_page=10`);
+      // Recovery-only. `type:issue` excludes pull requests (the search API
+      // returns both). GitHub search is eventually consistent AND can return
+      // incomplete results, so a null is never immediate proof no issue
+      // exists — the caller pairs it with the pending link's age, and an
+      // INCOMPLETE search is reported as an error so recovery does not
+      // recreate on a false miss.
+      const q = encodeURIComponent(`repo:${repo} type:issue in:body "${marker}"`);
+      const res = await send('GET', `${GITHUB_API}/search/issues?q=${q}&per_page=20`);
       if (!res.ok) return res;
-      const body = res.value.body;
-      const items =
-        body && typeof body === 'object' && Array.isArray((body as Record<string, unknown>).items)
-          ? ((body as Record<string, unknown>).items as unknown[])
-          : [];
+      const body = (res.value.body ?? {}) as Record<string, unknown>;
+      const items = Array.isArray(body.items) ? (body.items as unknown[]) : [];
       for (const item of items) {
         if (item && typeof item === 'object') {
           const rec = item as Record<string, unknown>;
@@ -217,6 +224,19 @@ export function createFetchGitHubClient(token: string, opts: GitHubClientOptions
             if (ref) return { ok: true, value: ref };
           }
         }
+      }
+      // No match found. Only trust that as "no issue exists" if the search
+      // was complete; otherwise report it unconfirmed so the caller retries
+      // instead of recreating a possibly-existing issue.
+      const incomplete = body.incomplete_results === true;
+      const total = typeof body.total_count === 'number' ? body.total_count : items.length;
+      if (incomplete || total > items.length) {
+        return {
+          ok: false,
+          error:
+            'GITHUB_UNKNOWN_ERROR: issue search returned incomplete results; could not confirm',
+          ambiguous: true,
+        };
       }
       return { ok: true, value: null };
     },
