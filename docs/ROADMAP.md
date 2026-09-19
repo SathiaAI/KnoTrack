@@ -952,7 +952,9 @@ this Track.
 **Status:** `on_track` (corrected 2026-09-19 — the two blockers named
 below are both cleared: `T4` went `done` 2026-09-07 and `T2.16` shipped
 2026-09-08, so the stale `blocked` no longer holds). `T5.1` is **done +
-verified 2026-09-19** (see that item); `T5.2`–`T5.4` remain open.
+verified 2026-09-19** and `T5.2` is **implemented + offline-verified
+2026-09-19** (real-repo dogfood gate pending — see those items); `T5.3` /
+`T5.4` remain open.
 **depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
 of "the track's most recent change" and any future logic that reads
 track completion to decide what to push should be built against the
@@ -978,11 +980,34 @@ corrected track-status model, not the currently-broken one).
    "stored value is ciphertext with a correct decrypt round-trip" proof at
    the DB layer). No code change was needed; this item was already
    satisfied by the `T2.15` register-project work and is now confirmed.
-2. **T5.2 — `kt_sync_to_github` fully implemented.** Acceptance: given a
-   stored encrypted GitHub credential, calling `kt_sync_to_github`
-   creates/updates a linked GitHub Issue for a KnoTrack item and records
-   the issue URL on the item, verified against one real test repository.
-   depends_on: `T2.12`, `T5.1`.
+2. **T5.2 — `kt_sync_to_github` implemented (offline-verified 2026-09-19;
+   real-repo dogfood gate pending).** Acceptance: given a stored encrypted
+   GitHub credential, calling `kt_sync_to_github`
+   creates/updates a linked GitHub Issue for a **track** (per `docs/PRD.md`
+   §4.13 — the tool is track-scoped, `{project_id, track_id}`, with **no
+   item-level sync target in v1**; a prior draft of this line said "item",
+   which was drift against the shipped tool schema and §4.13, corrected
+   2026-09-19) and records the issue URL on the track (surfaced on
+   `kt_get_track`'s `track.github_issue_url`), verified against one real
+   test repository. depends_on: `T2.12`, `T5.1`.
+   **Status (2026-09-19):** the create/update/no-op sync, its durable
+   creation-intent idempotency (a `pending` `track_external_links` row is
+   committed before the outbound POST, so a create-then-crash recovers via
+   the hidden body marker instead of duplicating), and the §4.13
+   operational-error envelope (`GITHUB_AUTH_FAILED` / `GITHUB_NOT_FOUND` /
+   `GITHUB_RATE_LIMITED` / `GITHUB_TIMEOUT` / `GITHUB_UNKNOWN_ERROR`) are
+   implemented and covered by offline unit + integration tests (fake
+   injected `GitHubClient`, no network in CI). Design panel 2026-09-19
+   (unanimous Option A: persisted link + native `fetch`, no SDK); Paul
+   chose the fully-hardened durable-intent variant. Two deliberate v1
+   bounds, documented not hidden: retries/backoff are intentionally absent
+   (a transient 5xx/secondary-rate-limit surfaces as `{ok:false}` for the
+   caller to retry — add them here if the GitHub surface grows); and a
+   stale-link `404` on update returns `GITHUB_NOT_FOUND` and does **not**
+   auto-recreate (a relink tool would be a separate item). The **one
+   remaining acceptance gate** is the real-repo verification against
+   `SathiaAI/KnoTrack` (dogfood) with a Paul-approved fine-grained PAT — not
+   part of the code/CI deliverable; see the handoff. `migrations/009_track_external_links.sql`.
 3. **T5.3 — `kt_sync_to_linear` fully implemented.** Acceptance: given a
    stored encrypted Linear credential, calling `kt_sync_to_linear`
    creates/updates a linked Linear issue for a KnoTrack item and records

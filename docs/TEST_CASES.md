@@ -417,7 +417,7 @@ section tests the *detection logic itself*, which is triggered both inline by
 
 `kt_sync_to_github(project_id, track_id) -> {ok} | {ok:false, error}` — only valid if a github adapter is configured for the project (a missing adapter is a `CONFLICT` error, not `{ok:false}`).
 
-**This build (T2.13 stub):** a _configured_ github adapter (provisioned via `kt_register_project`) currently returns `INTERNAL_ERROR` (`github sync is not available in this build`) — the success (`GHSY-01`) and operational-failure (`GHSY-04`/`GHSY-05`) rows below describe the T5.2 behavior once external sync ships; the missing-adapter `CONFLICT` rows are current.
+**This build (T5.2, implemented 2026-09-19):** a _configured_ github adapter now performs a real idempotent sync (create or update the track's GitHub Issue). Rows `GHSY-01`/`GHSY-04`/`GHSY-05` are the implemented behavior; `GHSY-14`..`GHSY-18` add idempotency, the missing-`repo` precondition, the URL-on-track read, and crash recovery. All are verified **offline** with an injected fake `GitHubClient` (no network in CI); the real-repo dogfood run against `SathiaAI/KnoTrack` with a fine-grained PAT is the one remaining acceptance gate (`docs/ROADMAP.md` T5.2).
 
 | Test ID | Tool/Area | Type | Preconditions | Input | Expected Result |
 |---|---|---|---|---|---|
@@ -434,6 +434,12 @@ section tests the *detection logic itself*, which is triggered both inline by
 | GHSY-11 | kt_sync_to_github | Negative | Two projects, two tokens | Wrong-tenant token/project pairing | 404 |
 | GHSY-12 | kt_sync_to_github | Negative | Two projects, two tokens | Token for P2 (P2 has github adapter), `project_id=P2`, `track_id` belongs to P1 | 404 |
 | GHSY-13 | kt_sync_to_github | Negative | github adapter configured with credential | Successful sync call (GHSY-01) | The success response body itself contains no credential — verify separately from the general adapter sweep in §16, since a successful sync is the highest-risk path for accidentally echoing adapter config back |
+| GHSY-14 | kt_sync_to_github | Positive (create + read) | github adapter with `repo` configured; track has no existing link | Valid call | Issue created (one HTTP create); a `track_external_links` row is `linked`; `kt_get_track`'s `track.github_issue_url` returns the Issue URL |
+| GHSY-15 | kt_sync_to_github | Positive (idempotent no-op) | GHSY-14 already synced; track content unchanged | Same call again | `{ok:true}` with **no** second HTTP call — create-vs-update is decided from the link row and the content hash matches |
+| GHSY-16 | kt_sync_to_github | Positive (update) | Linked track whose content changed | Same call | The **same** Issue is updated (no new Issue created), `{ok:true}` |
+| GHSY-17 | kt_sync_to_github | Negative (precondition) | github adapter configured but with **no** `repo` | Same call | `CONFLICT` (409), message `github adapter has no repository configured`; no HTTP call |
+| GHSY-18 | kt_sync_to_github | Recovery (no duplicates) | A `pending` link left by a crashed prior create | Same call | Recovers via the hidden `<!-- knotrack:track:<id> -->` marker — adopts the existing Issue if found, recreates only after an aged search-miss, asks the caller to retry on a fresh miss — never creating a duplicate |
+| GHSY-19 | kt_sync_to_github | Negative (no silent retarget) | Track linked to an Issue in repo A; adapter later repointed to repo B | Same call | `{ok:false, error:"...refusing to update a different repository"}` — the sync refuses rather than update an unrelated Issue |
 
 ---
 

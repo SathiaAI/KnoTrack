@@ -16,15 +16,17 @@ harness — not just one vendor's tool.
 
 ## Status
 
-Pre-release, v0.1.0. 11 of the 14 planned tools are fully implemented and
+Pre-release, v0.1.0. 12 of the 14 planned tools are fully implemented and
 dogfooded (KnoTrack tracks its own build using itself — see
 [`scripts/seed-self.ts`](scripts/seed-self.ts) and `docs/ROADMAP.md`'s T1).
-The remaining 3 ship as stub slices (2026-09-18, T2.11/T2.13/T2.14) — not
-yet usable end to end: `kt_check_drift` returns a well-formed empty scan
-(real drift heuristics land in T6), and the two sync tools validate their
-inputs and the adapter precondition, returning a clear `CONFLICT`
-("adapter not configured") or — once an adapter is configured — a "sync is
-not available in this build" error; full GitHub/Linear sync ships in T5.
+`kt_sync_to_github` is implemented as of T5.2 (2026-09-19): idempotent
+one-way sync of a track to a GitHub Issue, offline-verified, with its one
+remaining gate a real-repo dogfood run. The remaining 2 ship as stub
+slices: `kt_check_drift` returns a well-formed empty scan (real drift
+heuristics land in T6), and `kt_sync_to_linear` validates its inputs and
+the adapter precondition, returning a clear `CONFLICT` ("adapter not
+configured") or — once an adapter is configured — a "sync is not available
+in this build" error; Linear sync ships in T5.3.
 
 Every change lands through a mandatory adversarial-review gate before it's
 considered reviewed: deterministic checks (build, lint, typecheck, unit,
@@ -40,22 +42,22 @@ include full diffs and raw model output.
 
 ## Tools
 
-| Tool                        | Status      | Purpose                                                                                 |
-| --------------------------- | ----------- | --------------------------------------------------------------------------------------- |
-| `kt_register_project`       | implemented | Register (or upsert) a project by its source (`github`, `local`, etc.)                  |
-| `kt_get_project_status`     | implemented | Current status summary: tracks, items, drift flags                                      |
-| `kt_create_track`           | implemented | Create a track (a sequenced line of work) under a project                               |
-| `kt_create_item`            | implemented | Create an item within a track, auto- or explicitly-sequenced                            |
-| `kt_record_session_summary` | implemented | Record a session's summary and re-check for drift                                       |
-| `kt_list_tracks`            | implemented | List a project's tracks, optionally filtered by status                                  |
-| `kt_get_track`              | implemented | Track detail: items plus dependency graph                                               |
-| `kt_get_next_steps`         | implemented | Suggested next items given current status and dependencies                              |
-| `kt_record_decision`        | implemented | Record a decision and the context behind it                                             |
-| `kt_update_item_status`     | implemented | Move an item's status forward (or flag it blocked)                                      |
-| `kt_check_drift`            | stub        | On-demand drift scan (T2.11 stub: empty scan until heuristics ship in T6)               |
-| `kt_render_roadmap`         | implemented | Render a roadmap view from tracked items                                                |
-| `kt_sync_to_github`         | stub        | One-way sync to GitHub Issues (T2.13 stub: adapter precondition only; sync ships in T5) |
-| `kt_sync_to_linear`         | stub        | One-way sync to Linear (T2.14 stub: adapter precondition only; sync ships in T5)        |
+| Tool                        | Status      | Purpose                                                                                     |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `kt_register_project`       | implemented | Register (or upsert) a project by its source (`github`, `local`, etc.)                      |
+| `kt_get_project_status`     | implemented | Current status summary: tracks, items, drift flags                                          |
+| `kt_create_track`           | implemented | Create a track (a sequenced line of work) under a project                                   |
+| `kt_create_item`            | implemented | Create an item within a track, auto- or explicitly-sequenced                                |
+| `kt_record_session_summary` | implemented | Record a session's summary and re-check for drift                                           |
+| `kt_list_tracks`            | implemented | List a project's tracks, optionally filtered by status                                      |
+| `kt_get_track`              | implemented | Track detail: items plus dependency graph                                                   |
+| `kt_get_next_steps`         | implemented | Suggested next items given current status and dependencies                                  |
+| `kt_record_decision`        | implemented | Record a decision and the context behind it                                                 |
+| `kt_update_item_status`     | implemented | Move an item's status forward (or flag it blocked)                                          |
+| `kt_check_drift`            | stub        | On-demand drift scan (T2.11 stub: empty scan until heuristics ship in T6)                   |
+| `kt_render_roadmap`         | implemented | Render a roadmap view from tracked items                                                    |
+| `kt_sync_to_github`         | implemented | One-way idempotent sync of a track to a GitHub Issue (T5.2; real-repo dogfood gate pending) |
+| `kt_sync_to_linear`         | stub        | One-way sync to Linear (T2.14 stub: adapter precondition only; sync ships in T5.3)          |
 
 Full request/response contracts for every tool, implemented or planned,
 are in [`docs/TRD.md`](docs/TRD.md).
