@@ -76,6 +76,14 @@ export async function registerProjectService(
           encryptedCredential: encrypted,
           config: {
             team_id: input.adapters.linear.team_id,
+            // Optional workflow-state overrides (T5.3); only stored when set,
+            // so an adapter registered before T5.3 keeps auto-resolution.
+            ...(input.adapters.linear.done_state_id
+              ? { done_state_id: input.adapters.linear.done_state_id }
+              : {}),
+            ...(input.adapters.linear.open_state_id
+              ? { open_state_id: input.adapters.linear.open_state_id }
+              : {}),
             connected: true,
           },
         });

@@ -6,7 +6,10 @@ import { getTrackInputSchema, type GetTrackInput } from '../../schemas/tools.js'
 import { findActiveProjectById } from '../../db/queries/projects.js';
 import { findTrackById, getDependsOnTrackIds } from '../../db/queries/tracks.js';
 import { getItemDependencyEdgesForTrack, listItemsByTrack } from '../../db/queries/items.js';
-import { getGithubIssueUrlForTrack } from '../../db/queries/track-external-links.js';
+import {
+  getGithubIssueUrlForTrack,
+  getLinearIssueUrlForTrack,
+} from '../../db/queries/track-external-links.js';
 import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
 import { runTool } from '../tool-helpers.js';
@@ -27,6 +30,9 @@ export interface GetTrackOutput extends Record<string, unknown> {
      * This is where "kt_sync_to_github records the issue URL on the track"
      * (docs/PRD.md §4.13) is observable through the read contract. */
     github_issue_url: string | null;
+    /** T5.3: the URL of the Linear Issue this track is synced to, or null —
+     * the read-contract equivalent of github_issue_url (docs/PRD.md §4.14). */
+    linear_issue_url: string | null;
     created_at: string;
   };
   items: Array<{
@@ -67,6 +73,7 @@ export async function getTrackService(
     const items = await listItemsByTrack(client, track.id);
     const itemEdges = await getItemDependencyEdgesForTrack(client, track.id);
     const githubIssueUrl = await getGithubIssueUrlForTrack(client, track.id);
+    const linearIssueUrl = await getLinearIssueUrlForTrack(client, track.id);
 
     const dependsOnByItemId = new Map<string, string[]>();
     for (const edge of itemEdges) {
@@ -87,6 +94,7 @@ export async function getTrackService(
         source_doc_ref: track.source_doc_ref,
         depends_on_track_ids: dependsOnTrackIds,
         github_issue_url: githubIssueUrl,
+        linear_issue_url: linearIssueUrl,
         created_at: track.created_at.toISOString(),
       },
       items: items.map((item) => ({
