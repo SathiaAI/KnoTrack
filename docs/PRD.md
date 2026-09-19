@@ -130,7 +130,7 @@ Found KnoTrack on GitHub, is not a KnoTrack contributor, and just wants to run i
 |---|---|---|---|
 | `name` | string, 1–200 chars | yes | Display name. Not required to be unique — uniqueness is on `(source_type, source_ref)`, not `name` (see Business rules). |
 | `source_type` | enum: `"github" \| "linear" \| "local"` | yes | What kind of source `source_ref` identifies. |
-| `source_ref` | string, 1–500 chars | yes | Repo URL, Linear project ID, or local filesystem path, depending on `source_type`. For Linear this is the project identity; the team that issues sync into is `adapters.linear.team_id` (separate adapter metadata). |
+| `source_ref` | string, 1–500 chars | yes | GitHub `owner/repo` (e.g. `acme/widgets`), Linear project ID, or local filesystem path, depending on `source_type`. Stored and used **unchanged** — for GitHub the adapter passes it straight to `/repos/{source_ref}/issues`, so a repo URL is invalid; and because the value is part of the `(source_type, source_ref)` upsert key, a URL and an `owner/repo` form register as different projects. For Linear this is the project identity; the team that issues sync into is `adapters.linear.team_id` (separate adapter metadata). |
 | `adapters` | object `{ github?, linear? }` | no | Per-adapter credentials, supplied directly in the call (not read from server env vars). `github: { personal_access_token, repo? }`; `linear: { api_key, team_id, done_state_id?, open_state_id? }` (the two optional workflow-state overrides are T5.3 — see §4.14). |
 
 **Output:** `{ project_id }`
