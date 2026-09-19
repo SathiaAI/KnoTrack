@@ -41,13 +41,12 @@ adapters) is the next real feature track.
   are known to drift — see Gotchas):**
   - `T1` (spec sign-off) — informally superseded, not formally closed (`docs/SIGNOFF.md`
     doesn't exist). Long-standing, low-priority, not blocking anything real.
-  - `T2` (core MCP server) — substantially complete. **The one small stub-message gap is now
-    CLOSED (2026-09-18, PR #22):** `kt_check_drift` returns a success empty scan + "no
-    heuristics configured"; `kt_sync_to_github`/`kt_sync_to_linear` validate project+track then
-    return `CONFLICT` "adapter not configured" (or, when an adapter is configured via
-    `kt_register_project`, a clear "sync is not available in this build" `INTERNAL_ERROR`).
-    `stubs.ts`/`notImplementedResult` removed. T2 still not `done` — `T2.1`'s `migrate down` is
-    re-sequenced to `T7.7`.
+  - `T2` (core MCP server) — substantially complete. **One small, cheap, explicitly-tracked
+    gap still open:** `kt_check_drift`, `kt_sync_to_github`, `kt_sync_to_linear` all return a
+    generic `500 INTERNAL_ERROR` (`notImplementedResult` in `src/mcp/tools/stubs.ts`) instead
+    of each one's bespoke stub message (`kt_check_drift` wants an empty result + "no
+    heuristics configured"; the two sync tools want "adapter not configured" after validating
+    the item exists). No dependencies — pick this off any time.
   - `T3` (deploy + auth) — **done** (2026-09-05, live on Railway).
   - `T4` (second-client verification) — **done** (2026-09-07).
   - `T5` (GitHub + Linear adapters) — **ROADMAP.md's own header still says `blocked`, but
