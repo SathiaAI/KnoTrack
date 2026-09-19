@@ -168,7 +168,10 @@ describe('createFetchLinearClient — error mapping', () => {
     if (!res.ok) expect(res.ambiguous).toBe(false);
   });
 
-  it('maps a GraphQL entity-not-found error to LINEAR_NOT_FOUND (definitive)', async () => {
+  it('maps a GraphQL entity-not-found error to LINEAR_NOT_FOUND (prefix), ambiguous on a mutation', async () => {
+    // The prefix is surfaced, but a GraphQL-layer error on a MUTATION is
+    // ambiguous — the error may have followed a side effect (GPT-6 adversarial
+    // review). So the pending link is kept, not cleared.
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -188,8 +191,60 @@ describe('createFetchLinearClient — error mapping', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
+      expect(res.ambiguous).toBe(true);
+    }
+  });
+
+  it('keeps a mutation GraphQL rate-limit/auth/not-found error AMBIGUOUS (no false clear -> no duplicate)', async () => {
+    for (const message of ['rate limited', 'authentication failed', 'Entity not found']) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.resolve(resp(200, JSON.stringify({ errors: [{ message }] })))),
+      );
+      const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.ambiguous).toBe(true);
+    }
+  });
+
+  it('leaves the same GraphQL errors NON-ambiguous on a read (a read writes nothing)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(resp(200, JSON.stringify({ errors: [{ message: 'Entity not found' }] }))),
+      ),
+    );
+    const res = await client().getWorkflowStates(TEAM);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
       expect(res.ambiguous).toBe(false);
     }
+  });
+
+  it('redacts the api_key from any returned error string', async () => {
+    // An upstream body or a native-fetch exception could echo the key; it must
+    // never reach tool output (GPT-6 adversarial review, invariant 3).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(500, `upstream error, header was ${KEY} oops`))),
+    );
+    const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).not.toContain(KEY);
+      expect(res.error).toContain('[REDACTED]');
+    }
+  });
+
+  it('redacts the api_key from a thrown-exception error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error(`connect failed for Authorization: ${KEY}`))),
+    );
+    const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).not.toContain(KEY);
   });
 
   it('maps a GraphQL rate-limit error to LINEAR_RATE_LIMITED', async () => {

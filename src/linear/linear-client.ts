@@ -94,6 +94,17 @@ function isNotFoundMessage(text: string): boolean {
   return /entity_?not_?found|not found|could not find|does not exist|no such/i.test(text);
 }
 
+/** Removes the api_key from any string before it can surface in a returned
+ * error or a log line (adversarial review, GPT-6, PR #25). Error paths
+ * interpolate upstream response bodies and native-fetch exception messages
+ * (which can quote a malformed Authorization header value), so redaction — not
+ * truncation — is what keeps invariant 3 (the key never appears in output).
+ * Applied at every error return in `send`. */
+function redactSecret(text: string, secret: string): string {
+  if (!secret) return text;
+  return text.split(secret).join('[REDACTED]');
+}
+
 /** Maps a completed HTTP response (non-2xx) to a prefixed error + ambiguity.
  * 4xx means Linear rejected the request, so a create that got one did NOT
  * write (ambiguous=false). 5xx may have written then failed to respond, so a
@@ -161,18 +172,24 @@ function mapGraphqlErrors(
     })
     .join(' ');
   const haystack = `${msg} ${code}`;
+  // Ambiguity is decided by the operation, NOT the error category (adversarial
+  // review, GPT-6, PR #25): a GraphQL request returns HTTP 200 because it was
+  // accepted and (partially) executed, and the spec permits execution errors —
+  // including 'not found' / 'forbidden' / 'rate limit' messages — to appear
+  // AFTER a side effect, alongside partial data. So for a MUTATION, an errors
+  // array never proves the root mutation did not write: it stays ambiguous, and
+  // createFresh keeps its pending link for marker recovery rather than clearing
+  // it and risking a duplicate. The category (prefix) is still surfaced for the
+  // caller, but it does not downgrade ambiguity. A READ writes nothing, so its
+  // errors are never ambiguous.
+  const ambiguous = isMutation;
   if (isRateLimitedMessage(haystack))
-    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: false };
+    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous };
   if (isAuthMessage(haystack))
-    return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous: false };
-  // A missing team/issue (e.g. issueUpdate on a deleted issue, or issueCreate
-  // with a stale team_id) is reported as a 200 GraphQL error; surface it as the
-  // contract's LINEAR_NOT_FOUND so a caller can tell "needs relink/reconfigure"
-  // apart from a transient unknown failure (Codex PR #25). It is definitive —
-  // the entity does not exist, so nothing was written — hence not ambiguous.
+    return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous };
   if (isNotFoundMessage(haystack))
-    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous: false };
-  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: isMutation };
+    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous };
+  return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous };
 }
 
 function mapThrown(err: unknown): { error: string; ambiguous: boolean } {
@@ -213,7 +230,11 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       const text = await res.text();
       if (!res.ok) {
         const mapped = mapHttpError(res.status, res.headers, text);
-        return { ok: false, error: mapped.error, ambiguous: mapped.ambiguous };
+        return {
+          ok: false,
+          error: redactSecret(mapped.error, apiKey),
+          ambiguous: mapped.ambiguous,
+        };
       }
       let parsed: unknown;
       try {
@@ -229,7 +250,11 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       const obj = (parsed ?? {}) as Record<string, unknown>;
       if (Array.isArray(obj.errors) && obj.errors.length > 0) {
         const mapped = mapGraphqlErrors(obj.errors, isMutation);
-        return { ok: false, error: mapped.error, ambiguous: mapped.ambiguous };
+        return {
+          ok: false,
+          error: redactSecret(mapped.error, apiKey),
+          ambiguous: mapped.ambiguous,
+        };
       }
       const data = obj.data;
       if (data === null || typeof data !== 'object') {
@@ -242,7 +267,7 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       return { ok: true, value: data as Record<string, unknown> };
     } catch (err) {
       const mapped = mapThrown(err);
-      return { ok: false, error: mapped.error, ambiguous: mapped.ambiguous };
+      return { ok: false, error: redactSecret(mapped.error, apiKey), ambiguous: mapped.ambiguous };
     } finally {
       clearTimeout(timer);
     }
