@@ -699,7 +699,7 @@ Input schema:
 ```
 
 Two distinct failure surfaces, deliberately kept separate:
-- **Preconditions the caller can fix by calling a different tool first** (no `github` credentials stored for this project) → a real tool-level error, `409 CONFLICT`, via the `isError` envelope (§3.1).
+- **Preconditions the caller can fix by configuring the adapter first** (no `github` credentials stored for this project, or a stored `github` adapter with no `repo` in its config so no API URL can be formed) → a real tool-level error, `409 CONFLICT`, via the `isError` envelope (§3.1); no HTTP call is made.
 - **Everything about talking to GitHub itself** (bad token, repo not found, rate-limited, network timeout) → **not** an MCP-level error at all; the tool call succeeds and returns the discriminated result `{ok: false, error: "..."}` per the mandated signature, because these are expected, retryable operational outcomes rather than contract violations.
 
 Example success output:
@@ -713,7 +713,9 @@ Example operational-failure output (still a successful tool call):
 ```
 Other `error` string prefixes used: `GITHUB_AUTH_FAILED` (401/403 from GitHub — token revoked or insufficient scope), `GITHUB_NOT_FOUND` (repo or issue not found), `GITHUB_TIMEOUT` (exceeded `KNOTRACK_GITHUB_SYNC_TIMEOUT_MS`, default 8000ms), `GITHUB_UNKNOWN_ERROR` (anything else, with the upstream status code appended).
 
-Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no GitHub credentials configured for this project — i.e. no row in `adapters` for `(project_id, 'github')`); `422` (malformed uuid); `500` (credential decryption failure, unexpected local exception before the GitHub call was even attempted).
+Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no GitHub credentials configured for this project — no row in `adapters` for `(project_id, 'github')` — or a configured `github` adapter with no `repo`); `422` (malformed uuid); `500` (credential decryption failure, unexpected local exception before the GitHub call was even attempted).
+
+Idempotency (T5.2): the authoritative create-vs-update key is a `track_external_links` row (`migrations/009`, unique on `(track_id, adapter_type)`), never a GitHub search. A `pending` row is committed before the outbound create (durable creation-intent), so a crash mid-create recovers via a hidden `<!-- knotrack:track:<id> -->` body marker rather than duplicating. The created/updated issue URL is recorded on the track and surfaced on `kt_get_track` as `track.github_issue_url`. Retries/backoff are intentionally out of scope in v1.
 
 ### 3.15 `kt_sync_to_linear`
 

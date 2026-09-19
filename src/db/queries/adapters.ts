@@ -63,6 +63,25 @@ export async function listAdaptersForProject(
   return result.rows;
 }
 
+/** Single adapter row for (project, type), including `encrypted_credential`
+ * and `config` — used by the sync tools (kt_sync_to_github / T5.3
+ * kt_sync_to_linear), which must decrypt the credential and read the
+ * configured `repo`. Returns undefined when no adapter of that type is
+ * configured. Distinct from `adapterConfigured` (existence-only, never
+ * selects the secret): a caller that only needs the precondition check
+ * must keep using that one so the secret is never read needlessly. */
+export async function getAdapterForProject(
+  db: Queryable,
+  projectId: string,
+  type: 'github' | 'linear',
+): Promise<AdapterRow | undefined> {
+  const result = await db.query<AdapterRow>(
+    `SELECT * FROM adapters WHERE project_id = $1 AND type = $2 LIMIT 1`,
+    [projectId, type],
+  );
+  return result.rows[0];
+}
+
 /** Every adapter row across every project — used only by
  * scripts/rotate-encryption-key.ts, which has to re-encrypt every stored
  * credential regardless of which project it belongs to. No other call

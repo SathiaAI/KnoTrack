@@ -6,6 +6,7 @@ import { getTrackInputSchema, type GetTrackInput } from '../../schemas/tools.js'
 import { findActiveProjectById } from '../../db/queries/projects.js';
 import { findTrackById, getDependsOnTrackIds } from '../../db/queries/tracks.js';
 import { getItemDependencyEdgesForTrack, listItemsByTrack } from '../../db/queries/items.js';
+import { getGithubIssueUrlForTrack } from '../../db/queries/track-external-links.js';
 import { withReadSnapshot } from '../../db/tx.js';
 import { notFound } from '../errors.js';
 import { runTool } from '../tool-helpers.js';
@@ -22,6 +23,10 @@ export interface GetTrackOutput extends Record<string, unknown> {
     pivot_decision_id: string | null;
     source_doc_ref: string | null;
     depends_on_track_ids: string[];
+    /** T5.2: the URL of the GitHub Issue this track is synced to, or null.
+     * This is where "kt_sync_to_github records the issue URL on the track"
+     * (docs/PRD.md §4.13) is observable through the read contract. */
+    github_issue_url: string | null;
     created_at: string;
   };
   items: Array<{
@@ -61,6 +66,7 @@ export async function getTrackService(
     const dependsOnTrackIds = await getDependsOnTrackIds(client, track.id);
     const items = await listItemsByTrack(client, track.id);
     const itemEdges = await getItemDependencyEdgesForTrack(client, track.id);
+    const githubIssueUrl = await getGithubIssueUrlForTrack(client, track.id);
 
     const dependsOnByItemId = new Map<string, string[]>();
     for (const edge of itemEdges) {
@@ -80,6 +86,7 @@ export async function getTrackService(
         pivot_decision_id: track.pivot_decision_id,
         source_doc_ref: track.source_doc_ref,
         depends_on_track_ids: dependsOnTrackIds,
+        github_issue_url: githubIssueUrl,
         created_at: track.created_at.toISOString(),
       },
       items: items.map((item) => ({
