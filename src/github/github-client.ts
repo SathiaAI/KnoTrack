@@ -30,8 +30,7 @@ export interface GitHubIssueRef {
 }
 
 export type GitHubResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: string; ambiguous: boolean };
+  { ok: true; value: T } | { ok: false; error: string; ambiguous: boolean };
 
 export interface GitHubClient {
   /** POST /repos/{repo}/issues — creates an (open) issue with title+body. */
@@ -68,20 +67,29 @@ function isRateLimited(status: number, headers: Headers): boolean {
  * create that got any response did NOT create an issue (GitHub rejected
  * it): ambiguous=false for every mapped status here. Only never-completed
  * requests (timeout/network) are ambiguous, handled by the caller's catch. */
-function mapErrorResponse(status: number, headers: Headers, bodyText: string): {
+function mapErrorResponse(
+  status: number,
+  headers: Headers,
+  bodyText: string,
+): {
   error: string;
   ambiguous: boolean;
 } {
   const detail = bodyText.slice(0, 300).replace(/\s+/g, ' ').trim();
-  if (status === 401) return { error: `GITHUB_AUTH_FAILED: ${detail || 'unauthorized'}`, ambiguous: false };
+  if (status === 401)
+    return { error: `GITHUB_AUTH_FAILED: ${detail || 'unauthorized'}`, ambiguous: false };
   if (isRateLimited(status, headers))
     return { error: `GITHUB_RATE_LIMITED: ${detail || 'rate limit exceeded'}`, ambiguous: false };
   if (status === 403)
     return { error: `GITHUB_AUTH_FAILED: ${detail || 'forbidden'}`, ambiguous: false };
-  if (status === 404) return { error: `GITHUB_NOT_FOUND: ${detail || 'not found'}`, ambiguous: false };
+  if (status === 404)
+    return { error: `GITHUB_NOT_FOUND: ${detail || 'not found'}`, ambiguous: false };
   // No dedicated validation prefix in the PRD's closed set; 422 and any
   // other client/server status fold into UNKNOWN with GitHub's own message.
-  return { error: `GITHUB_UNKNOWN_ERROR: HTTP ${status}${detail ? `: ${detail}` : ''}`, ambiguous: false };
+  return {
+    error: `GITHUB_UNKNOWN_ERROR: HTTP ${status}${detail ? `: ${detail}` : ''}`,
+    ambiguous: false,
+  };
 }
 
 function mapThrown(err: unknown): { error: string; ambiguous: boolean } {

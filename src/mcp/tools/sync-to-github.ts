@@ -112,7 +112,11 @@ export async function syncToGithubService(
   const items = await listItemsByTrack(pool, track.id);
   const payload = buildIssuePayload(
     { id: track.id, title: track.title, status: track.status },
-    items.map((i) => ({ title: i.title, status: i.status, sequence_position: i.sequence_position })),
+    items.map((i) => ({
+      title: i.title,
+      status: i.status,
+      sequence_position: i.sequence_position,
+    })),
   );
   const hash = payloadContentHash(payload);
 
