@@ -120,7 +120,10 @@ function mapHttpError(
   // Redact the FULL upstream body BEFORE truncating: a secret that straddles
   // the 300-char boundary would otherwise survive as a partial the later
   // exact-string redact cannot match (Codex PR #25).
-  const detail = redactSecret(bodyText, secret).slice(0, 300).replace(/\s+/g, ' ').trim();
+  // Classify on the FULL redacted text; truncate only the detail we return, so an
+  // identifying keyword past char 300 is not lost before classification (Codex PR #25).
+  const fullDetail = redactSecret(bodyText, secret).replace(/\s+/g, ' ').trim();
+  const detail = fullDetail.slice(0, 300);
   // 5xx is checked FIRST: a 5xx may have committed the write server-side and
   // then failed to respond, so it is ALWAYS ambiguous — even when it carries a
   // Retry-After header (Codex PR #25: a 5xx+Retry-After must not be reclassified
@@ -137,9 +140,9 @@ function mapHttpError(
     return { error: `LINEAR_RATE_LIMITED: ${detail || 'rate limit exceeded'}`, ambiguous: false };
   if (status === 404)
     return { error: `LINEAR_NOT_FOUND: ${detail || 'not found'}`, ambiguous: false };
-  if (status === 400 && isAuthMessage(detail))
+  if (status === 400 && isAuthMessage(fullDetail))
     return { error: `LINEAR_AUTH_FAILED: ${detail}`, ambiguous: false };
-  if (status === 400 && isRateLimitedMessage(detail))
+  if (status === 400 && isRateLimitedMessage(fullDetail))
     return { error: `LINEAR_RATE_LIMITED: ${detail}`, ambiguous: false };
   // Any other completed 4xx is a definitive rejection (no write) for a create.
   return {
@@ -162,7 +165,10 @@ function mapGraphqlErrors(
 ): { error: string; ambiguous: boolean } {
   // Redact the FULL joined message BEFORE truncating (see mapHttpError): a
   // boundary-straddling key must not survive as an unmatched partial (Codex PR #25).
-  const msg = redactSecret(
+  // Redact the FULL joined message; classify on all of it, truncate only what we
+  // return, so a keyword past char 300 is not dropped before classification
+  // (Codex PR #25). A boundary-straddling key still cannot survive (redact first).
+  const fullMsg = redactSecret(
     errors
       .map((e) =>
         e && typeof e === 'object' && typeof (e as Record<string, unknown>).message === 'string'
@@ -172,7 +178,8 @@ function mapGraphqlErrors(
       .filter(Boolean)
       .join('; '),
     secret,
-  ).slice(0, 300);
+  );
+  const msg = fullMsg.slice(0, 300);
   const code = errors
     .map((e) => {
       const ext =
@@ -182,7 +189,7 @@ function mapGraphqlErrors(
       return typeof c === 'string' ? c : '';
     })
     .join(' ');
-  const haystack = `${msg} ${code}`;
+  const haystack = `${fullMsg} ${code}`;
   // On a MUTATION, a top-level GraphQL `errors` array on an HTTP 200 does NOT
   // prove the write did not happen: Linear (like any GraphQL server) can return
   // partial `data` alongside `errors` once execution has begun, and a text match

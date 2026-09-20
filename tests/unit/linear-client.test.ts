@@ -276,6 +276,19 @@ describe('createFetchLinearClient — error mapping', () => {
     }
   });
 
+  it('classifies a GraphQL error by a keyword PAST char 300 (classify full, truncate only detail)', async () => {
+    // The identifying keyword sits after the 300-char cut; classification must run
+    // on the full message so it is not misread as LINEAR_UNKNOWN_ERROR (Codex PR #25).
+    const message = 'x'.repeat(320) + ' authentication failed';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(resp(200, JSON.stringify({ errors: [{ message }] })))),
+    );
+    const res = await client().getWorkflowStates(TEAM);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/^LINEAR_AUTH_FAILED/);
+  });
+
   it('redacts the api_key from any returned error string', async () => {
     // An upstream body or a native-fetch exception could echo the key; it must
     // never reach tool output (GPT-6 adversarial review, invariant 3).

@@ -952,8 +952,8 @@ this Track.
 **Status:** `on_track` (corrected 2026-09-19 — the two blockers named
 below are both cleared: `T4` went `done` 2026-09-07 and `T2.16` shipped
 2026-09-08, so the stale `blocked` no longer holds). `T5.1` is **done +
-verified 2026-09-19** and `T5.2` is **implemented + offline-verified
-2026-09-19** (real-repo dogfood gate pending — see those items); `T5.3` is
+verified 2026-09-19** and `T5.2` is **implemented + dogfooded against a real repo
+2026-09-19** (Issue #24); `T5.3` is
 **implemented + offline-verified 2026-09-19** (real-workspace dogfood gate
 pending); `T5.4` remains open.
 **depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
@@ -981,8 +981,8 @@ corrected track-status model, not the currently-broken one).
    "stored value is ciphertext with a correct decrypt round-trip" proof at
    the DB layer). No code change was needed; this item was already
    satisfied by the `T2.15` register-project work and is now confirmed.
-2. **T5.2 — `kt_sync_to_github` implemented (offline-verified 2026-09-19;
-   real-repo dogfood gate pending).** Acceptance: given a stored encrypted
+2. **T5.2 — `kt_sync_to_github` implemented + dogfooded against a real repo
+   (2026-09-19, Issue #24).** Acceptance: given a stored encrypted
    GitHub credential, calling `kt_sync_to_github`
    creates/updates a linked GitHub Issue for a **track** (per `docs/PRD.md`
    §4.13 — the tool is track-scoped, `{project_id, track_id}`, with **no
@@ -1018,10 +1018,9 @@ corrected track-status model, not the currently-broken one).
    self-corrects on the next sync (one redundant PATCH). Revisit only if
    real concurrent-update contention is observed; a future option is a
    per-(track,adapter) advisory lock scoped to just the finalize, or an
-   `operation_id` compare-and-set on the hash write. The **one
-   remaining acceptance gate** is the real-repo verification against
-   `SathiaAI/KnoTrack` (dogfood) with a Paul-approved fine-grained PAT — not
-   part of the code/CI deliverable; see the handoff. `migrations/009_track_external_links.sql`.
+   `operation_id` compare-and-set on the hash write. The real-repo acceptance
+   gate is **complete**: dogfooded against `SathiaAI/KnoTrack` on 2026-09-19
+   with a Paul-approved fine-grained PAT (Issue #24). `migrations/009_track_external_links.sql`.
 3. **T5.3 — `kt_sync_to_linear` fully implemented.** Acceptance: given a
    stored encrypted Linear credential, calling `kt_sync_to_linear`
    creates/updates a linked Linear Issue for a **track** (track-scoped
