@@ -168,10 +168,10 @@ describe('createFetchLinearClient — error mapping', () => {
     if (!res.ok) expect(res.ambiguous).toBe(false);
   });
 
-  it('maps a GraphQL entity-not-found error on a MUTATION to LINEAR_NOT_FOUND, DEFINITIVE', async () => {
-    // A GraphQL entity-not-found is a pre-execution rejection (the entity does
-    // not exist, so nothing was written) -> definitive: the pending claim is
-    // cleared and the next sync retries cleanly (Codex PR #25).
+  it('maps a GraphQL entity-not-found error on a MUTATION to LINEAR_NOT_FOUND, ambiguous', async () => {
+    // The NOT_FOUND prefix is still surfaced, but on a MUTATION a 200 GraphQL
+    // error cannot prove no write occurred, so it stays ambiguous and the pending
+    // link is kept for marker recovery, not cleared (CodeRabbit + panel, PR #25).
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -191,11 +191,15 @@ describe('createFetchLinearClient — error mapping', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error).toMatch(/^LINEAR_NOT_FOUND/);
-      expect(res.ambiguous).toBe(false);
+      expect(res.ambiguous).toBe(true);
     }
   });
 
-  it('classifies mutation GraphQL rate-limit/auth/not-found as DEFINITIVE (pre-execution rejection, clean retry)', async () => {
+  it('keeps mutation GraphQL rate-limit/auth/not-found AMBIGUOUS (200 cannot prove no write -> no duplicate)', async () => {
+    // A 200 GraphQL error on a mutation is never proof of pre-execution rejection,
+    // so the pending claim is kept (CodeRabbit + frontier panel, PR #25). The
+    // prefix is still surfaced. HTTP-status forms of these stay definitive in
+    // mapHttpError (see the HTTP 401/429 tests).
     for (const message of ['rate limited', 'authentication failed', 'Entity not found']) {
       vi.stubGlobal(
         'fetch',
@@ -203,7 +207,7 @@ describe('createFetchLinearClient — error mapping', () => {
       );
       const res = await client().createIssue(TEAM, { title: 'T', description: 'D' });
       expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.ambiguous).toBe(false);
+      if (!res.ok) expect(res.ambiguous).toBe(true);
     }
   });
 

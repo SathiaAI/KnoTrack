@@ -10,9 +10,10 @@
 // Linear differences handled here:
 //   - Transport is GraphQL: one endpoint, POST { query, variables }. A
 //     GraphQL request can return HTTP 200 with a top-level `errors` array.
-//     A known pre-execution rejection (auth / rate-limit / entity-not-found)
-//     means nothing was written -> {ok:false}, ambiguous:false. A generic
-//     mutation error can legally follow a side effect, so it stays ambiguous.
+//     On a MUTATION that is always ambiguous ({ok:false}, ambiguous:true): a 200
+//     can carry partial data + errors, so a GraphQL error never proves no write
+//     happened. HTTP 4xx (auth / rate-limit / not-found) stays definitive in
+//     mapHttpError. Reads are always definitive.
 //   - Auth header is the raw api_key ("Authorization: <key>"), NOT
 //     "Bearer <key>" (that form is only for OAuth access tokens).
 //   - There is no open/closed; a workflow state (stateId) is resolved by
@@ -182,20 +183,32 @@ function mapGraphqlErrors(
     })
     .join(' ');
   const haystack = `${msg} ${code}`;
-  // Known pre-execution rejections are DEFINITIVE (Codex PR #25, reconciling the
-  // GPT-6 adversarial pass): Linear rejects auth / rate-limit / entity-not-found
-  // BEFORE the mutation executes, so nothing was written. Clearing the pending
-  // claim lets the next sync retry cleanly instead of wedging forever (e.g. an
-  // expired key later rotated, or a stale team_id). Only a genuinely OPAQUE
-  // execution error can legally follow a side effect on a mutation, so it alone
-  // stays ambiguous (ambiguous:isMutation), keeping the pending link for marker
-  // recovery. A READ writes nothing, so every read error is definitive.
+  // On a MUTATION, a top-level GraphQL `errors` array on an HTTP 200 does NOT
+  // prove the write did not happen: Linear (like any GraphQL server) can return
+  // partial `data` alongside `errors` once execution has begun, and a text match
+  // over the message cannot establish a pre-execution rejection. So every mutation
+  // GraphQL error stays AMBIGUOUS (ambiguous:isMutation) and createFresh keeps its
+  // pending link for marker recovery rather than clearing it and risking a
+  // DUPLICATE issue -- honoring the invariant "duplicate prevention takes priority
+  // over auto-retry when the outcome cannot be established" (CodeRabbit + frontier
+  // panel, PR #25). The category prefix is still surfaced. HTTP-status auth
+  // (401/403), rate-limit (429/400) and not-found (404) stay DEFINITIVE in
+  // mapHttpError, which covers the common expired-key / stale-team case. A READ
+  // writes nothing, so its errors are always definitive.
+  // FOLLOW-UP (T5.3, needs the real-workspace dogfood): tighten to a three-way
+  // classifier -- definitive on a mutation ONLY for an allowlisted pre-execution
+  // extensions.code (e.g. AUTHENTICATION_ERROR / FORBIDDEN) with no usable
+  // data.issueCreate.issue; ambiguous otherwise. Requires real Linear response
+  // bodies as golden-file tests, which the live dogfood will provide.
   if (isRateLimitedMessage(haystack))
-    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: false };
+    return { error: `LINEAR_RATE_LIMITED: ${msg || 'rate limited'}`, ambiguous: isMutation };
   if (isAuthMessage(haystack))
-    return { error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`, ambiguous: false };
+    return {
+      error: `LINEAR_AUTH_FAILED: ${msg || 'authentication failed'}`,
+      ambiguous: isMutation,
+    };
   if (isNotFoundMessage(haystack))
-    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous: false };
+    return { error: `LINEAR_NOT_FOUND: ${msg || 'entity not found'}`, ambiguous: isMutation };
   return { error: `LINEAR_UNKNOWN_ERROR: ${msg || 'GraphQL error'}`, ambiguous: isMutation };
 }
 
