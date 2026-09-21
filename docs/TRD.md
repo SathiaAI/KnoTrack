@@ -199,7 +199,9 @@ Input schema:
             "api_key": { "type": "string", "minLength": 1, "maxLength": 512 },
             "team_id": { "type": "string", "minLength": 1, "maxLength": 200 },
             "done_state_id": { "type": "string", "minLength": 1, "maxLength": 200 },
-            "open_state_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+            "open_state_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "label_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "project_id": { "type": "string", "minLength": 1, "maxLength": 200 }
           },
           "required": ["api_key", "team_id"],
           "additionalProperties": false
@@ -746,7 +748,7 @@ Example operational-failure output:
 ```json
 { "ok": false, "error": "LINEAR_AUTH_FAILED: API key rejected" }
 ```
-`error` string prefixes: `LINEAR_AUTH_FAILED`, `LINEAR_NOT_FOUND` (team or issue not found), `LINEAR_RATE_LIMITED`, `LINEAR_TIMEOUT` (exceeded `KNOTRACK_LINEAR_SYNC_TIMEOUT_MS`, default 8000ms), `LINEAR_STATE_CONFIG` (invalid `done_state_id`/`open_state_id`, or a done track whose team has no `completed` workflow state and no configured `done_state_id`), `LINEAR_UNKNOWN_ERROR`.
+`error` string prefixes: `LINEAR_AUTH_FAILED`, `LINEAR_NOT_FOUND` (team or issue not found), `LINEAR_RATE_LIMITED`, `LINEAR_TIMEOUT` (exceeded `KNOTRACK_LINEAR_SYNC_TIMEOUT_MS`, default 8000ms), `LINEAR_STATE_CONFIG` (invalid `done_state_id`/`open_state_id`, or a done track whose team has no `completed` workflow state and no configured `done_state_id`), `LINEAR_TAG_CONFIG` (a configured `label_id`/`project_id` that does not exist or is not on the team; the sync never auto-creates the label/project), `LINEAR_UNKNOWN_ERROR`.
 
 Errors (tool-level, via `isError`): `401`; `404` (project or track not found); `409` (no Linear credentials configured for this project); `422` (malformed uuid); `500`.
 

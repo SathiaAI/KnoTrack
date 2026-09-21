@@ -21,7 +21,7 @@
 //
 // Operational failures map to fixed prefixes
 // (LINEAR_AUTH_FAILED / LINEAR_NOT_FOUND / LINEAR_RATE_LIMITED /
-// LINEAR_TIMEOUT / LINEAR_UNKNOWN_ERROR). `ambiguous` tells the caller
+// LINEAR_TIMEOUT / LINEAR_TAG_CONFIG / LINEAR_UNKNOWN_ERROR). `ambiguous` tells the caller
 // whether a create mutation may have reached Linear despite the failure
 // (timeout / 5xx / network / malformed-2xx) so it can keep a durable
 // `pending` link for marker recovery instead of recreating a duplicate.
@@ -31,6 +31,12 @@ const LINEAR_API = 'https://api.linear.app/graphql';
 export interface LinearIssuePayload {
   title: string;
   description: string;
+}
+
+/** Resolved tag targets a sync stamps onto an issue (T5.3 tagging). */
+export interface LinearTagTargets {
+  labelIds?: string[];
+  projectId?: string;
 }
 
 export interface LinearIssueRef {
@@ -53,18 +59,34 @@ export type LinearResult<T> =
   { ok: true; value: T } | { ok: false; error: string; ambiguous: boolean };
 
 export interface LinearClient {
-  /** issueCreate — creates an issue in `teamId`; sets `stateId` when given. */
+  /** issueCreate — creates an issue in `teamId`; sets `stateId` and `tags`
+   * (labelIds/projectId) when given. */
   createIssue(
     teamId: string,
     payload: LinearIssuePayload,
     stateId?: string,
+    tags?: LinearTagTargets,
   ): Promise<LinearResult<LinearIssueRef>>;
-  /** issueUpdate — reconciles title/description (and stateId when given). */
+  /** issueUpdate — reconciles title/description (and stateId/projectId when
+   * given). Labels are enforced separately via `addLabel` so unrelated labels
+   * are never clobbered. */
   updateIssue(
     issueId: string,
     payload: LinearIssuePayload,
     stateId?: string,
+    tags?: LinearTagTargets,
   ): Promise<LinearResult<LinearIssueRef>>;
+  /** issueAddLabel — atomically add one label to an issue (idempotent; does not
+   * touch other labels). Used to enforce the KnoTrack label on updates. */
+  addLabel(issueId: string, labelId: string): Promise<LinearResult<null>>;
+  /** Validate configured label_id/project_id against the team BEFORE a sync
+   * writes, so a misconfigured tag surfaces as a definitive LINEAR_TAG_CONFIG
+   * instead of wedging a create. Never auto-creates (frontier panel, PR #25). */
+  validateTags(
+    teamId: string,
+    labelId?: string,
+    projectId?: string,
+  ): Promise<LinearResult<LinearTagTargets>>;
   /** Recovery-only: find an existing issue in `teamId` whose description
    * carries `marker`. Returns null when none is found. */
   findIssueByMarker(teamId: string, marker: string): Promise<LinearResult<LinearIssueRef | null>>;
@@ -350,13 +372,15 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
   const ISSUE_FIELDS = 'id identifier url';
 
   return {
-    async createIssue(teamId, payload, stateId) {
+    async createIssue(teamId, payload, stateId, tags) {
       const input: Record<string, unknown> = {
         teamId,
         title: payload.title,
         description: payload.description,
       };
       if (stateId) input.stateId = stateId;
+      if (tags?.labelIds && tags.labelIds.length > 0) input.labelIds = tags.labelIds;
+      if (tags?.projectId) input.projectId = tags.projectId;
       const res = await send(
         `mutation KtCreate($input: IssueCreateInput!) {
            issueCreate(input: $input) { success issue { ${ISSUE_FIELDS} } }
@@ -368,12 +392,13 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       return refFromMutation(res.value, 'issueCreate');
     },
 
-    async updateIssue(issueId, payload, stateId) {
+    async updateIssue(issueId, payload, stateId, tags) {
       const input: Record<string, unknown> = {
         title: payload.title,
         description: payload.description,
       };
       if (stateId) input.stateId = stateId;
+      if (tags?.projectId) input.projectId = tags.projectId;
       const res = await send(
         `mutation KtUpdate($id: String!, $input: IssueUpdateInput!) {
            issueUpdate(id: $id, input: $input) { success issue { ${ISSUE_FIELDS} } }
@@ -473,6 +498,150 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       if (state === null || typeof state !== 'object') return { ok: true, value: null };
       const type = (state as Record<string, unknown>).type;
       return { ok: true, value: typeof type === 'string' ? type : null };
+    },
+
+    async addLabel(issueId, labelId) {
+      const res = await send(
+        `mutation KtAddLabel($id: String!, $labelId: String!) {
+           issueAddLabel(id: $id, labelId: $labelId) { success }
+         }`,
+        { id: issueId, labelId },
+        true,
+      );
+      if (!res.ok) return res;
+      const payload = res.value.issueAddLabel;
+      const success =
+        payload !== null &&
+        typeof payload === 'object' &&
+        (payload as Record<string, unknown>).success === true;
+      if (!success) {
+        return {
+          ok: false,
+          error: 'LINEAR_UNKNOWN_ERROR: issueAddLabel did not report success',
+          ambiguous: true,
+        };
+      }
+      return { ok: true, value: null };
+    },
+
+    async validateTags(teamId, labelId, projectId) {
+      if (!labelId && !projectId) return { ok: true, value: {} };
+      const varDefs: string[] = [];
+      const parts: string[] = [];
+      const vars: Record<string, unknown> = {};
+      if (labelId) {
+        varDefs.push('$labelId: String!');
+        vars.labelId = labelId;
+        parts.push('label: issueLabel(id: $labelId) { id team { id } }');
+      }
+      if (projectId) {
+        varDefs.push('$projectId: String!');
+        vars.projectId = projectId;
+        parts.push(
+          'project: project(id: $projectId) { id teams(first: 250) { nodes { id } pageInfo { hasNextPage endCursor } } }',
+        );
+      }
+      const res = await send(
+        `query KtTags(${varDefs.join(', ')}) { ${parts.join(' ')} }`,
+        vars,
+        false,
+      );
+      if (!res.ok) {
+        // A missing/mismatched resource surfaces as LINEAR_NOT_FOUND (definitive
+        // config error) -> LINEAR_TAG_CONFIG. Any other prefix (auth / rate-limit
+        // / timeout / unknown) is an OPERATIONAL failure the caller must handle by
+        // its own retry/credential-repair path, so pass it through unchanged
+        // (CodeRabbit + Codex, PR #26).
+        if (!res.error.startsWith('LINEAR_NOT_FOUND:')) return res;
+        return { ok: false, error: `LINEAR_TAG_CONFIG: ${res.error}`, ambiguous: false };
+      }
+      const out: LinearTagTargets = {};
+      if (labelId) {
+        const label = res.value.label;
+        if (label === null || typeof label !== 'object') {
+          return {
+            ok: false,
+            error: `LINEAR_TAG_CONFIG: configured label_id ${labelId} is not a label in this workspace`,
+            ambiguous: false,
+          };
+        }
+        const team = (label as Record<string, unknown>).team;
+        const lTeamId =
+          team !== null && typeof team === 'object'
+            ? (team as Record<string, unknown>).id
+            : undefined;
+        // A workspace-scoped label has team null (applies to every team); a
+        // team-scoped label must belong to this team.
+        if (lTeamId !== undefined && lTeamId !== teamId) {
+          return {
+            ok: false,
+            error: `LINEAR_TAG_CONFIG: configured label_id ${labelId} belongs to a different team`,
+            ambiguous: false,
+          };
+        }
+        out.labelIds = [labelId];
+      }
+      if (projectId) {
+        const project = res.value.project;
+        if (project === null || typeof project !== 'object') {
+          return {
+            ok: false,
+            error: `LINEAR_TAG_CONFIG: configured project_id ${projectId} is not a project in this workspace`,
+            ambiguous: false,
+          };
+        }
+        const idsOf = (conn: Record<string, unknown>): string[] => {
+          const nodes = Array.isArray(conn.nodes) ? (conn.nodes as unknown[]) : [];
+          return nodes
+            .map((n) =>
+              n !== null && typeof n === 'object' ? (n as Record<string, unknown>).id : undefined,
+            )
+            .filter((id): id is string => typeof id === 'string');
+        };
+        let page = ((project as Record<string, unknown>).teams ?? {}) as Record<string, unknown>;
+        let hasTeam = idsOf(page).includes(teamId);
+        // Paginate the project's teams: a project on more teams than one page must
+        // not be falsely rejected (Codex PR #26). An operational read error during
+        // pagination passes through unchanged (not a config error).
+        let previousCursor: string | undefined;
+        while (!hasTeam) {
+          const info = (page.pageInfo ?? {}) as Record<string, unknown>;
+          if (info.hasNextPage !== true || typeof info.endCursor !== 'string') break;
+          // Guard against a non-advancing cursor: if Linear returns the same
+          // endCursor again, break out with a definitive operational error rather
+          // than looping forever on unbounded reads (CodeRabbit PR #26).
+          if (info.endCursor === previousCursor) {
+            return {
+              ok: false,
+              error: 'LINEAR_UNKNOWN_ERROR: project team pagination cursor did not advance',
+              ambiguous: false,
+            };
+          }
+          previousCursor = info.endCursor;
+          const more = await send(
+            `query KtProjTeams($projectId: String!, $after: String!) {
+               project(id: $projectId) {
+                 teams(first: 250, after: $after) { nodes { id } pageInfo { hasNextPage endCursor } }
+               }
+             }`,
+            { projectId, after: info.endCursor },
+            false,
+          );
+          if (!more.ok) return more;
+          const proj = (more.value.project ?? {}) as Record<string, unknown>;
+          page = (proj.teams ?? {}) as Record<string, unknown>;
+          hasTeam = idsOf(page).includes(teamId);
+        }
+        if (!hasTeam) {
+          return {
+            ok: false,
+            error: `LINEAR_TAG_CONFIG: configured project_id ${projectId} is not accessible to team ${teamId}`,
+            ambiguous: false,
+          };
+        }
+        out.projectId = projectId;
+      }
+      return { ok: true, value: out };
     },
   };
 }

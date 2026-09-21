@@ -84,6 +84,10 @@ export async function registerProjectService(
             ...(input.adapters.linear.open_state_id
               ? { open_state_id: input.adapters.linear.open_state_id }
               : {}),
+            ...(input.adapters.linear.label_id ? { label_id: input.adapters.linear.label_id } : {}),
+            ...(input.adapters.linear.project_id
+              ? { project_id: input.adapters.linear.project_id }
+              : {}),
             connected: true,
           },
         });

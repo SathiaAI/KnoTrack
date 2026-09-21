@@ -224,3 +224,17 @@ describe('resolveLinearStateId — non-done track (never auto-moves)', () => {
     expect(String((r as { error: string }).error)).toMatch(/terminal/);
   });
 });
+
+describe('linearPayloadContentHash — tag-config compat (Codex PR #26)', () => {
+  const base = { title: 'T', description: 'D' };
+  it('an untagged adapter produces the SAME hash as before tag support (no null tag keys)', () => {
+    const withEmptyTag = linearPayloadContentHash(base, 'open', {}, {});
+    const noTagArg = linearPayloadContentHash(base, 'open', {});
+    expect(withEmptyTag).toBe(noTagArg);
+  });
+  it('a configured tag changes the hash', () => {
+    const untagged = linearPayloadContentHash(base, 'open', {}, {});
+    const tagged = linearPayloadContentHash(base, 'open', {}, { labelId: 'L', projectId: 'P' });
+    expect(tagged).not.toBe(untagged);
+  });
+});

@@ -111,6 +111,7 @@ export function linearPayloadContentHash(
   payload: LinearPayload,
   stateIntent: 'done' | 'open',
   stateConfig: { doneStateId?: string; openStateId?: string } = {},
+  tagConfig: { labelId?: string; projectId?: string } = {},
 ): string {
   const canonical = JSON.stringify({
     title: payload.title,
@@ -122,6 +123,14 @@ export function linearPayloadContentHash(
     // re-validated) instead of taking a false no-op path (Codex PR #25).
     done_state_id: stateConfig.doneStateId ?? null,
     open_state_id: stateConfig.openStateId ?? null,
+    // Same reasoning for the tag targets (T5.3): re-registering with a
+    // different label_id/project_id changes the hash so the linked issue is
+    // re-synced and re-stamped instead of a false no-op. The keys are added
+    // ONLY when a tag is configured, so an untagged adapter keeps the exact
+    // prior hash and does NOT force a spurious update on upgrade (Codex PR #26).
+    ...(tagConfig.labelId || tagConfig.projectId
+      ? { label_id: tagConfig.labelId ?? null, project_id: tagConfig.projectId ?? null }
+      : {}),
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
