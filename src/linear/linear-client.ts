@@ -603,9 +603,21 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
         // Paginate the project's teams: a project on more teams than one page must
         // not be falsely rejected (Codex PR #26). An operational read error during
         // pagination passes through unchanged (not a config error).
+        let previousCursor: string | undefined;
         while (!hasTeam) {
           const info = (page.pageInfo ?? {}) as Record<string, unknown>;
           if (info.hasNextPage !== true || typeof info.endCursor !== 'string') break;
+          // Guard against a non-advancing cursor: if Linear returns the same
+          // endCursor again, break out with a definitive operational error rather
+          // than looping forever on unbounded reads (CodeRabbit PR #26).
+          if (info.endCursor === previousCursor) {
+            return {
+              ok: false,
+              error: 'LINEAR_UNKNOWN_ERROR: project team pagination cursor did not advance',
+              ambiguous: false,
+            };
+          }
+          previousCursor = info.endCursor;
           const more = await send(
             `query KtProjTeams($projectId: String!, $after: String!) {
                project(id: $projectId) {
