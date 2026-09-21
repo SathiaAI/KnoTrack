@@ -952,9 +952,10 @@ this Track.
 **Status:** `on_track` (corrected 2026-09-19 — the two blockers named
 below are both cleared: `T4` went `done` 2026-09-07 and `T2.16` shipped
 2026-09-08, so the stale `blocked` no longer holds). `T5.1` is **done +
-verified 2026-09-19** and `T5.2` is **implemented + offline-verified
-2026-09-19** (real-repo dogfood gate pending — see those items); `T5.3` /
-`T5.4` remain open.
+verified 2026-09-19** and `T5.2` is **implemented + dogfooded against a real repo
+2026-09-19** (Issue #24); `T5.3` is
+**implemented + offline-verified 2026-09-19** (real-workspace dogfood gate
+pending); `T5.4` remains open.
 **depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
 of "the track's most recent change" and any future logic that reads
 track completion to decide what to push should be built against the
@@ -980,8 +981,8 @@ corrected track-status model, not the currently-broken one).
    "stored value is ciphertext with a correct decrypt round-trip" proof at
    the DB layer). No code change was needed; this item was already
    satisfied by the `T2.15` register-project work and is now confirmed.
-2. **T5.2 — `kt_sync_to_github` implemented (offline-verified 2026-09-19;
-   real-repo dogfood gate pending).** Acceptance: given a stored encrypted
+2. **T5.2 — `kt_sync_to_github` implemented + dogfooded against a real repo
+   (2026-09-19, Issue #24).** Acceptance: given a stored encrypted
    GitHub credential, calling `kt_sync_to_github`
    creates/updates a linked GitHub Issue for a **track** (per `docs/PRD.md`
    §4.13 — the tool is track-scoped, `{project_id, track_id}`, with **no
@@ -1017,15 +1018,37 @@ corrected track-status model, not the currently-broken one).
    self-corrects on the next sync (one redundant PATCH). Revisit only if
    real concurrent-update contention is observed; a future option is a
    per-(track,adapter) advisory lock scoped to just the finalize, or an
-   `operation_id` compare-and-set on the hash write. The **one
-   remaining acceptance gate** is the real-repo verification against
-   `SathiaAI/KnoTrack` (dogfood) with a Paul-approved fine-grained PAT — not
-   part of the code/CI deliverable; see the handoff. `migrations/009_track_external_links.sql`.
+   `operation_id` compare-and-set on the hash write. The real-repo acceptance
+   gate is **complete**: dogfooded against `SathiaAI/KnoTrack` on 2026-09-19
+   with a Paul-approved fine-grained PAT (Issue #24). `migrations/009_track_external_links.sql`.
 3. **T5.3 — `kt_sync_to_linear` fully implemented.** Acceptance: given a
    stored encrypted Linear credential, calling `kt_sync_to_linear`
-   creates/updates a linked Linear issue for a KnoTrack item and records
-   the issue URL on the item, verified against one real test Linear
-   workspace. depends_on: `T2.13`, `T5.1`.
+   creates/updates a linked Linear Issue for a **track** (track-scoped
+   `{project_id, track_id}`, mirroring A4.13/T5.2 — no item-level sync
+   target in v1) and records the issue URL on the track (surfaced on
+   `kt_get_track`'s `track.linear_issue_url`), verified against one real
+   test Linear workspace. depends_on: `T2.13`, `T5.1`.
+   **Status (2026-09-19): implemented + offline-verified.** Mirrors the
+   T5.2 GitHub design — persisted `track_external_links` link as the
+   authoritative idempotency key, durable `pending` creation-intent before
+   the outbound GraphQL mutation, hidden-marker crash recovery that adopts
+   but never auto-recreates, injectable `LinearClient` (no network in CI),
+   and no new migration (the T5.2 table and `tracks.last_linear_sync_at`
+   already generalize). Linear-specific design (frontier panel 2026-09-19,
+   unanimous `auto_lookup_with_config_override`): a done track's issue is
+   moved to a `completed` workflow state — the team's lowest-position one,
+   or the optional `done_state_id` override — while a non-done track's issue
+   is never auto-moved backward unless a valid `open_state_id` is
+   configured (two optional fields added to the Linear adapter config).
+   Operational failures return `{ok:false, error}` with fixed prefixes
+   (`LINEAR_AUTH_FAILED` / `LINEAR_NOT_FOUND` / `LINEAR_RATE_LIMITED` /
+   `LINEAR_TIMEOUT` / `LINEAR_STATE_CONFIG` / `LINEAR_UNKNOWN_ERROR`).
+   Same deliberate v1 bounds as T5.2 (no retries/backoff; no update-path
+   lock; no auto-recreate on a stale link). Covered by offline unit +
+   integration tests (`tests/unit/linear-payload.test.ts`,
+   `tests/unit/linear-client.test.ts`,
+   `tests/integration/sync-to-linear.test.ts`). The one remaining
+   acceptance gate is the real-workspace dogfood.
 4. **T5.4 — Credential revocation path implemented + unit-tested.**
    Acceptance: deleting a stored GitHub/Linear credential causes the next
    sync call to fail with a clear "credential not configured" error

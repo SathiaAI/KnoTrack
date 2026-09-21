@@ -23,6 +23,18 @@ const linearAdapterInput = z
   .object({
     api_key: z.string().min(1).max(512),
     team_id: z.string().min(1).max(200),
+    // Optional workflow-state overrides (T5.3). When omitted, sync auto-picks
+    // the team's lowest-position 'completed' state for a done track and never
+    // moves a non-done track's issue backward. When set, they pin exact Linear
+    // WorkflowState UUIDs: done_state_id must be a 'completed'-type state;
+    // open_state_id is the state a reopened (no-longer-done) track's issue is
+    // moved to and must be a non-terminal (backlog/unstarted/started) state
+    // (a 'completed' or 'canceled' state is rejected with LINEAR_STATE_CONFIG).
+    // `.trim()` before `.min(1)` so a whitespace-only override is rejected at
+    // registration (a blank string is not a valid state id) rather than being
+    // silently coerced to "unset" and falling back to auto behavior (Codex PR #25).
+    done_state_id: z.string().trim().min(1).max(200).optional(),
+    open_state_id: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 
