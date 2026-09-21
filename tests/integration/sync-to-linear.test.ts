@@ -10,6 +10,7 @@ import { upsertAdapter } from '../../src/db/queries/adapters.js';
 import { encryptCredential } from '../../src/crypto/credential-cipher.js';
 import type {
   LinearClient,
+  LinearTagTargets,
   LinearIssuePayload,
   LinearIssueRef,
   LinearResult,
@@ -31,9 +32,16 @@ const DEFAULT_STATES: LinearWorkflowState[] = [
 
 // ---- fake Linear client ------------------------------------------------
 interface FakeState {
-  createCalls: Array<{ teamId: string; stateId?: string; payload: LinearIssuePayload }>;
-  updateCalls: Array<{ issueId: string; stateId?: string }>;
+  createCalls: Array<{
+    teamId: string;
+    stateId?: string;
+    payload: LinearIssuePayload;
+    tags?: LinearTagTargets;
+  }>;
+  updateCalls: Array<{ issueId: string; stateId?: string; tags?: LinearTagTargets }>;
   findCalls: Array<{ teamId: string; marker: string }>;
+  addLabelCalls: Array<{ issueId: string; labelId: string }>;
+  tagCalls: Array<{ teamId: string; labelId?: string; projectId?: string }>;
   statesCalls: number;
   nextId: number;
 }
@@ -43,18 +51,22 @@ interface FakeOverrides {
   findIssueByMarker?: (s: FakeState) => LinearResult<LinearIssueRef | null>;
   getWorkflowStates?: () => LinearResult<LinearWorkflowState[]>;
   getIssueStateType?: () => LinearResult<string | null>;
+  validateTags?: (s: FakeState) => LinearResult<LinearTagTargets>;
+  addLabel?: (s: FakeState) => LinearResult<null>;
 }
 function makeFake(overrides: FakeOverrides = {}) {
   const state: FakeState = {
     createCalls: [],
     updateCalls: [],
     findCalls: [],
+    addLabelCalls: [],
+    tagCalls: [],
     statesCalls: 0,
     nextId: 1,
   };
   const client: LinearClient = {
-    createIssue(teamId, payload, stateId) {
-      state.createCalls.push({ teamId, stateId, payload });
+    createIssue(teamId, payload, stateId, tags) {
+      state.createCalls.push({ teamId, stateId, payload, tags });
       const r: LinearResult<LinearIssueRef> = overrides.createIssue
         ? overrides.createIssue(state)
         : {
@@ -67,8 +79,8 @@ function makeFake(overrides: FakeOverrides = {}) {
           };
       return Promise.resolve(r);
     },
-    updateIssue(issueId, _payload, stateId) {
-      state.updateCalls.push({ issueId, stateId });
+    updateIssue(issueId, _payload, stateId, tags) {
+      state.updateCalls.push({ issueId, stateId, tags });
       const r: LinearResult<LinearIssueRef> = overrides.updateIssue
         ? overrides.updateIssue(state, issueId)
         : {
@@ -87,6 +99,21 @@ function makeFake(overrides: FakeOverrides = {}) {
         ? overrides.findIssueByMarker(state)
         : { ok: true, value: null };
       return Promise.resolve(r);
+    },
+    addLabel(issueId, labelId) {
+      state.addLabelCalls.push({ issueId, labelId });
+      const r: LinearResult<null> = overrides.addLabel
+        ? overrides.addLabel(state)
+        : { ok: true, value: null };
+      return Promise.resolve(r);
+    },
+    validateTags(teamId, labelId, projectId) {
+      state.tagCalls.push({ teamId, labelId, projectId });
+      if (overrides.validateTags) return Promise.resolve(overrides.validateTags(state));
+      const value: LinearTagTargets = {};
+      if (labelId) value.labelIds = [labelId];
+      if (projectId) value.projectId = projectId;
+      return Promise.resolve({ ok: true, value });
     },
     getWorkflowStates() {
       state.statesCalls += 1;
@@ -112,6 +139,8 @@ async function makeProjectTrack(
     teamId?: string | null;
     doneStateId?: string;
     openStateId?: string;
+    labelId?: string;
+    projectId?: string;
   } = {},
 ) {
   const withLinear = opts.withLinear ?? true;
@@ -122,6 +151,8 @@ async function makeProjectTrack(
           team_id: opts.teamId ?? TEAM,
           done_state_id: opts.doneStateId,
           open_state_id: opts.openStateId,
+          label_id: opts.labelId,
+          project_id: opts.projectId,
         },
       }
     : undefined;
@@ -464,5 +495,71 @@ describe('kt_sync_to_linear — durable creation-intent / recovery', () => {
     expect(String(res.error)).toMatch(/resolve the team change/);
     expect(state.findCalls).toHaveLength(0); // never searched the wrong team
     expect((await linkRow(track_id))?.sync_state).toBe('pending');
+  });
+});
+
+describe('kt_sync_to_linear — tagging (T5.3: KnoTrack label + project)', () => {
+  it('stamps labelIds + projectId on CREATE and validates them first', async () => {
+    const { state, deps } = makeFake();
+    const { project_id, track_id } = await makeProjectTrack({
+      labelId: 'lbl-knotrack',
+      projectId: 'proj-knotrack',
+    });
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(true);
+    expect(state.tagCalls).toEqual([
+      { teamId: TEAM, labelId: 'lbl-knotrack', projectId: 'proj-knotrack' },
+    ]);
+    expect(state.createCalls).toHaveLength(1);
+    expect(state.createCalls[0]!.tags).toEqual({
+      labelIds: ['lbl-knotrack'],
+      projectId: 'proj-knotrack',
+    });
+  });
+
+  it('enforces projectId on UPDATE via issueUpdate and the label via issueAddLabel (no clobber)', async () => {
+    const { state, deps } = makeFake();
+    const { project_id, track_id } = await makeProjectTrack({
+      labelId: 'lbl-knotrack',
+      projectId: 'proj-knotrack',
+    });
+    // create
+    await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    const created = state.createCalls[0]!;
+    const issueId = `iss-1`;
+    // change content so the next sync takes the update path
+    await createItemService(pool, config, {
+      project_id,
+      track_id,
+      title: 'new item',
+      sequence_position: undefined,
+      depends_on: [],
+    });
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(true);
+    expect(state.updateCalls.at(-1)).toMatchObject({
+      issueId,
+      tags: { projectId: 'proj-knotrack' },
+    });
+    // the label is enforced atomically (never via issueUpdate labelIds)
+    expect(state.addLabelCalls.at(-1)).toEqual({ issueId, labelId: 'lbl-knotrack' });
+    expect(created.tags).toEqual({ labelIds: ['lbl-knotrack'], projectId: 'proj-knotrack' });
+  });
+
+  it('fails LINEAR_TAG_CONFIG on a bad tag id and does NOT create or wedge a pending row', async () => {
+    const { state, deps } = makeFake({
+      validateTags: () => ({
+        ok: false,
+        error: 'LINEAR_TAG_CONFIG: configured label_id lbl-bad is not a label in this workspace',
+        ambiguous: false,
+      }),
+    });
+    const { project_id, track_id } = await makeProjectTrack({ labelId: 'lbl-bad' });
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/^LINEAR_TAG_CONFIG/);
+    expect(state.createCalls).toHaveLength(0);
+    // validation runs BEFORE the pending claim, so no row is left behind.
+    expect(await linkRow(track_id)).toBeUndefined();
   });
 });

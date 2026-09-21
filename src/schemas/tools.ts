@@ -35,6 +35,10 @@ const linearAdapterInput = z
     // silently coerced to "unset" and falling back to auto behavior (Codex PR #25).
     done_state_id: z.string().trim().min(1).max(200).optional(),
     open_state_id: z.string().trim().min(1).max(200).optional(),
+    // T5.3 tagging: the KnoTrack label + project every synced issue is stamped
+    // with (IDs of pre-existing Linear resources; the sync never auto-creates).
+    label_id: z.string().trim().min(1).max(200).optional(),
+    project_id: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

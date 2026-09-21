@@ -57,6 +57,7 @@ import {
   createFetchLinearClient,
   type LinearClient,
   type LinearClientFactory,
+  type LinearTagTargets,
 } from '../../linear/linear-client.js';
 
 const ADAPTER = 'linear' as const;
@@ -74,6 +75,11 @@ export interface SyncToLinearDeps {
 interface StateConfig {
   doneStateId?: string;
   openStateId?: string;
+}
+
+interface TagConfig {
+  labelId?: string;
+  projectId?: string;
 }
 
 export async function syncToLinearService(
@@ -117,6 +123,10 @@ export async function syncToLinearService(
     doneStateId: readOptionalString(adapter.config['done_state_id']),
     openStateId: readOptionalString(adapter.config['open_state_id']),
   };
+  const tagConfig: TagConfig = {
+    labelId: readOptionalString(adapter.config['label_id']),
+    projectId: readOptionalString(adapter.config['project_id']),
+  };
 
   // 3. Decrypt the stored credential (never leaks the key).
   const apiKey = decryptCredential(adapter.encrypted_credential, config.encryptionKey);
@@ -145,7 +155,7 @@ export async function syncToLinearService(
   );
   const trackStatus = snap.track.status;
   const stateIntent = stateIntentFor(trackStatus);
-  const hash = linearPayloadContentHash(payload, stateIntent, stateConfig);
+  const hash = linearPayloadContentHash(payload, stateIntent, stateConfig, tagConfig);
 
   const client = clientFactory(apiKey, {
     timeoutMs: config.linearSyncTimeoutMs,
@@ -180,6 +190,7 @@ export async function syncToLinearService(
     syncedAt,
     trackStatus,
     stateConfig,
+    tagConfig,
   };
 
   switch (decision.kind) {
@@ -215,6 +226,7 @@ interface SyncCtx {
   syncedAt: Date;
   trackStatus: string;
   stateConfig: StateConfig;
+  tagConfig: TagConfig;
 }
 
 type Decision =
@@ -276,6 +288,36 @@ async function resolveState(
   return { ok: true, stateId: resolved.stateId };
 }
 
+/** Validates the configured KnoTrack label_id/project_id against the team
+ * (never auto-creates — frontier panel, PR #25). Returns the resolved tag
+ * targets, or a definitive LINEAR_TAG_CONFIG error so a misconfigured tag never
+ * wedges a create. `{}` when nothing is configured. */
+async function resolveTags(
+  ctx: SyncCtx,
+): Promise<{ ok: true; tags: LinearTagTargets } | { ok: false; error: string }> {
+  if (!ctx.tagConfig.labelId && !ctx.tagConfig.projectId) return { ok: true, tags: {} };
+  const res = await ctx.client.validateTags(
+    ctx.teamId,
+    ctx.tagConfig.labelId,
+    ctx.tagConfig.projectId,
+  );
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, tags: res.value };
+}
+
+/** Idempotently ensures the configured KnoTrack label is on an existing issue,
+ * without disturbing any other labels (atomic issueAddLabel). No-op when no
+ * label is configured. */
+async function enforceLabel(
+  ctx: SyncCtx,
+  issueId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!ctx.tagConfig.labelId) return { ok: true };
+  const res = await ctx.client.addLabel(issueId, ctx.tagConfig.labelId);
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true };
+}
+
 async function createFresh(ctx: SyncCtx): Promise<LinearSyncOutput> {
   // Resolve the target workflow state BEFORE committing the durable pending
   // intent. This Linear-only network read has no side effect, so a crash or a
@@ -283,6 +325,10 @@ async function createFresh(ctx: SyncCtx): Promise<LinearSyncOutput> {
   // was never attempted (Codex PR #25) — no wedge, clean retry.
   const state = await resolveState(ctx, 'create');
   if (!state.ok) return { ok: false, error: state.error };
+  // Validate tag targets BEFORE claiming, same as the state read: a side-effect
+  // -free read, so a config/transport failure leaves no pending row to wedge.
+  const tags = await resolveTags(ctx);
+  if (!tags.ok) return { ok: false, error: tags.error };
 
   // Claim the durable pending intent now, BEFORE the outbound mutation. The
   // UNIQUE(track_id, adapter_type) ON CONFLICT DO NOTHING is the cross-process
@@ -303,7 +349,7 @@ async function createFresh(ctx: SyncCtx): Promise<LinearSyncOutput> {
     };
   }
 
-  const created = await ctx.client.createIssue(ctx.teamId, ctx.payload, state.stateId);
+  const created = await ctx.client.createIssue(ctx.teamId, ctx.payload, state.stateId, tags.tags);
   if (!created.ok) {
     if (!created.ambiguous) {
       await withTransaction(ctx.pool, (c) =>
@@ -343,13 +389,20 @@ async function updateExisting(ctx: SyncCtx, row: TrackExternalLinkRow): Promise<
   }
   const state = await resolveState(ctx, 'update', issueId);
   if (!state.ok) return { ok: false, error: state.error };
+  const tags = await resolveTags(ctx);
+  if (!tags.ok) return { ok: false, error: tags.error };
 
   // As with GitHub, we do NOT hold a DB lock across this network call: the
   // decision-transaction row lock is already released. issueUpdate is
   // idempotent, there is no duplicate/lost issue, and a momentarily-stale
   // content_hash self-corrects on the next sync.
-  const res = await ctx.client.updateIssue(issueId, ctx.payload, state.stateId);
+  const res = await ctx.client.updateIssue(issueId, ctx.payload, state.stateId, {
+    projectId: tags.tags.projectId,
+  });
   if (!res.ok) return { ok: false, error: res.error };
+  // Enforce the label atomically (idempotent; never clobbers other labels).
+  const labelRes = await enforceLabel(ctx, issueId);
+  if (!labelRes.ok) return { ok: false, error: labelRes.error };
   await withTransaction(ctx.pool, (c) =>
     updateLinkedContentHash(c, {
       trackId: ctx.trackId,
@@ -379,8 +432,14 @@ async function recoverPending(ctx: SyncCtx, row: TrackExternalLinkRow): Promise<
     const ref = found.value;
     const state = await resolveState(ctx, 'update', ref.id);
     if (!state.ok) return { ok: false, error: state.error };
-    const res = await ctx.client.updateIssue(ref.id, ctx.payload, state.stateId);
+    const tags = await resolveTags(ctx);
+    if (!tags.ok) return { ok: false, error: tags.error };
+    const res = await ctx.client.updateIssue(ref.id, ctx.payload, state.stateId, {
+      projectId: tags.tags.projectId,
+    });
     if (!res.ok) return { ok: false, error: res.error };
+    const labelRes = await enforceLabel(ctx, ref.id);
+    if (!labelRes.ok) return { ok: false, error: labelRes.error };
     const finalized = await withTransaction(ctx.pool, (c) =>
       finalizeLinked(c, {
         trackId: ctx.trackId,
