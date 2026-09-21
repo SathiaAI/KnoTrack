@@ -546,6 +546,22 @@ describe('kt_sync_to_linear — tagging (T5.3: KnoTrack label + project)', () =>
     expect(created.tags).toEqual({ labelIds: ['lbl-knotrack'], projectId: 'proj-knotrack' });
   });
 
+  it('passes an OPERATIONAL validation error (rate-limit) through unchanged, not as TAG_CONFIG', async () => {
+    const { state, deps } = makeFake({
+      validateTags: () => ({
+        ok: false,
+        error: 'LINEAR_RATE_LIMITED: slow down',
+        ambiguous: false,
+      }),
+    });
+    const { project_id, track_id } = await makeProjectTrack({ labelId: 'lbl-x' });
+    const res = await syncToLinearService(pool, config, { project_id, track_id }, deps);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/^LINEAR_RATE_LIMITED/);
+    expect(state.createCalls).toHaveLength(0);
+    expect(await linkRow(track_id)).toBeUndefined();
+  });
+
   it('fails LINEAR_TAG_CONFIG on a bad tag id and does NOT create or wedge a pending row', async () => {
     const { state, deps } = makeFake({
       validateTags: () => ({

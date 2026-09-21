@@ -537,17 +537,24 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
       if (projectId) {
         varDefs.push('$projectId: String!');
         vars.projectId = projectId;
-        parts.push('project: project(id: $projectId) { id teams { nodes { id } } }');
+        parts.push(
+          'project: project(id: $projectId) { id teams(first: 250) { nodes { id } pageInfo { hasNextPage endCursor } } }',
+        );
       }
       const res = await send(
         `query KtTags(${varDefs.join(', ')}) { ${parts.join(' ')} }`,
         vars,
         false,
       );
-      // A non-existent id comes back as a GraphQL error (INPUT_ERROR / entity
-      // not found), not a null field — either way it is a definitive config
-      // error, never an auto-create (frontier panel, PR #25).
-      if (!res.ok) return { ok: false, error: `LINEAR_TAG_CONFIG: ${res.error}`, ambiguous: false };
+      if (!res.ok) {
+        // A missing/mismatched resource surfaces as LINEAR_NOT_FOUND (definitive
+        // config error) -> LINEAR_TAG_CONFIG. Any other prefix (auth / rate-limit
+        // / timeout / unknown) is an OPERATIONAL failure the caller must handle by
+        // its own retry/credential-repair path, so pass it through unchanged
+        // (CodeRabbit + Codex, PR #26).
+        if (!res.error.startsWith('LINEAR_NOT_FOUND:')) return res;
+        return { ok: false, error: `LINEAR_TAG_CONFIG: ${res.error}`, ambiguous: false };
+      }
       const out: LinearTagTargets = {};
       if (labelId) {
         const label = res.value.label;
@@ -583,12 +590,36 @@ export function createFetchLinearClient(apiKey: string, opts: LinearClientOption
             ambiguous: false,
           };
         }
-        const teams = ((project as Record<string, unknown>).teams ?? {}) as Record<string, unknown>;
-        const nodes = Array.isArray(teams.nodes) ? (teams.nodes as unknown[]) : [];
-        const hasTeam = nodes.some(
-          (n) =>
-            n !== null && typeof n === 'object' && (n as Record<string, unknown>).id === teamId,
-        );
+        const idsOf = (conn: Record<string, unknown>): string[] => {
+          const nodes = Array.isArray(conn.nodes) ? (conn.nodes as unknown[]) : [];
+          return nodes
+            .map((n) =>
+              n !== null && typeof n === 'object' ? (n as Record<string, unknown>).id : undefined,
+            )
+            .filter((id): id is string => typeof id === 'string');
+        };
+        let page = ((project as Record<string, unknown>).teams ?? {}) as Record<string, unknown>;
+        let hasTeam = idsOf(page).includes(teamId);
+        // Paginate the project's teams: a project on more teams than one page must
+        // not be falsely rejected (Codex PR #26). An operational read error during
+        // pagination passes through unchanged (not a config error).
+        while (!hasTeam) {
+          const info = (page.pageInfo ?? {}) as Record<string, unknown>;
+          if (info.hasNextPage !== true || typeof info.endCursor !== 'string') break;
+          const more = await send(
+            `query KtProjTeams($projectId: String!, $after: String!) {
+               project(id: $projectId) {
+                 teams(first: 250, after: $after) { nodes { id } pageInfo { hasNextPage endCursor } }
+               }
+             }`,
+            { projectId, after: info.endCursor },
+            false,
+          );
+          if (!more.ok) return more;
+          const proj = (more.value.project ?? {}) as Record<string, unknown>;
+          page = (proj.teams ?? {}) as Record<string, unknown>;
+          hasTeam = idsOf(page).includes(teamId);
+        }
         if (!hasTeam) {
           return {
             ok: false,
