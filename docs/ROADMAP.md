@@ -953,9 +953,9 @@ this Track.
 below are both cleared: `T4` went `done` 2026-09-07 and `T2.16` shipped
 2026-09-08, so the stale `blocked` no longer holds). `T5.1` is **done +
 verified 2026-09-19** and `T5.2` is **implemented + dogfooded against a real repo
-2026-09-19** (Issue #24); `T5.3` is
-**implemented + offline-verified 2026-09-19** (real-workspace dogfood gate
-pending); `T5.4` remains open.
+2026-09-19** (Issue #24); `T5.3` is **implemented, dogfooded in a real Linear
+workspace, and label/project-tagged 2026-09-21** (PRs #25/#26); `T5.4` is **done
+2026-09-21**. All of `T5` is now complete.
 **depends_on:** `T4`, `T2.16` (added 2026-08-29 — `SYNC_DRIFT`'s notion
 of "the track's most recent change" and any future logic that reads
 track completion to decide what to push should be built against the
@@ -1049,10 +1049,15 @@ corrected track-status model, not the currently-broken one).
    `tests/unit/linear-client.test.ts`,
    `tests/integration/sync-to-linear.test.ts`). The one remaining
    acceptance gate is the real-workspace dogfood.
-4. **T5.4 — Credential revocation path implemented + unit-tested.**
-   Acceptance: deleting a stored GitHub/Linear credential causes the next
-   sync call to fail with a clear "credential not configured" error
-   rather than crashing or silently using a stale token.
+4. **T5.4 — Credential revocation path implemented + unit-tested. ✅ Done
+   2026-09-21.** Acceptance: deleting a stored GitHub/Linear credential causes
+   the next sync call to fail with a clear "adapter not configured" CONFLICT
+   rather than crashing or using a stale token. Shipped: a
+   `deleteAdapterForProject` query + the operator-run
+   `npm run revoke-credential <project_id> <github|linear>` script — no MCP tool
+   (the mandated 14-tool contract has none, and the credential is decrypted
+   per-call so nothing stale is cached). Integration-tested (revoke → clean
+   CONFLICT for both adapters; idempotent; re-register stores the new credential).
    depends_on: `T5.2`, `T5.3`.
 
 ---

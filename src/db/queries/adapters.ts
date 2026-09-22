@@ -112,6 +112,25 @@ export async function updateAdapterEncryptedCredential(
  * least of all `encrypted_credential` — because the sync-tool precondition
  * path (kt_sync_to_github / kt_sync_to_linear) only needs to know whether
  * a row exists, never its secret. */
+/** Revocation primitive (T5.4): permanently removes one project's stored
+ * adapter credential + config for a given type. Returns true if a row was
+ * deleted, false if there was nothing to revoke. After this, the sync-tool
+ * precondition (`getAdapterForProject`/`adapterConfigured`) sees no adapter,
+ * so the next kt_sync_to_{github,linear} fails with a clean "adapter not
+ * configured" CONFLICT rather than crashing or using a stale token. The
+ * credential is only ever decrypted per-call, so nothing cached survives. */
+export async function deleteAdapterForProject(
+  db: Queryable,
+  projectId: string,
+  type: 'github' | 'linear',
+): Promise<boolean> {
+  const result = await db.query(`DELETE FROM adapters WHERE project_id = $1 AND type = $2`, [
+    projectId,
+    type,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function adapterConfigured(
   db: Queryable,
   projectId: string,
