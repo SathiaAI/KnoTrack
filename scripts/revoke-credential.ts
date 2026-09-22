@@ -10,43 +10,82 @@
 // token — the credential is only ever decrypted per sync call, so nothing
 // cached survives the delete.
 //
-// Usage (local dev, via tsx):
-//   npm run revoke-credential -- <project_id> <github|linear>
+// This deletes KnoTrack's STORED COPY only. It does NOT revoke the token at the
+// provider — you must ALSO revoke the PAT at GitHub / the API key at Linear to
+// invalidate it there.
+//
+// Usage (local dev, via tsx) — a bare run PREVIEWS and does nothing; add --yes
+// to actually delete (a fat-finger guard, matching rotate-encryption-key's care):
+//   npm run revoke-credential -- <project_id> <github|linear>          # preview
+//   npm run revoke-credential -- <project_id> <github|linear> --yes    # delete
 //
 // Usage (Docker / production runtime image): the runtime stage has no `tsx`
 // (a devDependency) and copies only `dist`, not `scripts/*.ts` — same
 // constraint scripts/migrate.ts and scripts/rotate-encryption-key.ts document.
-// Run the compiled output directly:
 //   docker run --rm --env-file .env <image> \
-//     node dist/scripts/revoke-credential.js <project_id> <github|linear>
+//     node dist/scripts/revoke-credential.js <project_id> <github|linear> --yes
 import { fileURLToPath } from 'node:url';
 import { loadDotEnvIfPresent } from '../src/config/load-dotenv.js';
 import { loadConfig } from '../src/config/env.js';
 import { createPool } from '../src/db/pool.js';
-import { deleteAdapterForProject } from '../src/db/queries/adapters.js';
+import { adapterConfigured, deleteAdapterForProject } from '../src/db/queries/adapters.js';
 
-function parseArgs(args: string[]): { projectId: string; type: 'github' | 'linear' } {
-  const [projectId, type] = args;
+export interface RevokeArgs {
+  projectId: string;
+  type: 'github' | 'linear';
+  confirmed: boolean;
+}
+
+/** Parses `<project_id> <github|linear> [--yes]` (flag order-independent).
+ * Throws on a missing project id or an out-of-allowlist type, so the caller
+ * exits non-zero on malformed input. */
+export function parseArgs(args: string[]): RevokeArgs {
+  const confirmed = args.includes('--yes');
+  const positional = args.filter((a) => a !== '--yes');
+  const [projectId, type] = positional;
   if (!projectId || (type !== 'github' && type !== 'linear')) {
-    throw new Error('usage: revoke-credential <project_id> <github|linear>');
+    throw new Error('usage: revoke-credential <project_id> <github|linear> [--yes]');
   }
-  return { projectId, type };
+  return { projectId, type, confirmed };
+}
+
+function providerName(type: 'github' | 'linear'): string {
+  return type === 'github' ? 'GitHub' : 'Linear';
 }
 
 async function main(): Promise<void> {
   loadDotEnvIfPresent();
   const config = loadConfig();
-  const { projectId, type } = parseArgs(process.argv.slice(2));
+  const { projectId, type, confirmed } = parseArgs(process.argv.slice(2));
 
   const pool = createPool(config);
   try {
+    const exists = await adapterConfigured(pool, projectId, type);
+
+    // Dry-run preview unless --yes: show the target and refuse to delete, so an
+    // accidental invocation never destroys a credential (frontier panel, T5.4).
+    if (!confirmed) {
+      console.log(
+        `PREVIEW — would revoke the ${type} credential for project ${projectId} ` +
+          `(adapter currently ${exists ? 'CONFIGURED' : 'not configured'}).\n` +
+          `This removes KnoTrack's stored copy ONLY — you must also revoke the token at ` +
+          `${providerName(type)} to invalidate it there.\n` +
+          `Re-run with --yes to proceed: revoke-credential ${projectId} ${type} --yes`,
+      );
+      return;
+    }
+
     const revoked = await deleteAdapterForProject(pool, projectId, type);
+    const operator = process.env.SUDO_USER ?? process.env.USER ?? 'unknown';
+    const audit =
+      `[${new Date().toISOString()}] revoke-credential operator=${operator} ` +
+      `project=${projectId} type=${type} rows_deleted=${revoked ? 1 : 0}`;
     console.log(
       revoked
-        ? `Revoked the ${type} credential for project ${projectId}. ` +
-            `The next kt_sync_to_${type} for this project fails with ` +
-            `"adapter not configured" until it is re-registered via kt_register_project.`
-        : `No ${type} adapter was configured for project ${projectId}; nothing to revoke.`,
+        ? `${audit}\nRevoked. The next kt_sync_to_${type} for this project fails with ` +
+            `"adapter not configured" until it is re-registered via kt_register_project. ` +
+            `Remember to also revoke the token at ${providerName(type)}.`
+        : `${audit}\nNo ${type} adapter was configured for project ${projectId}; nothing to revoke.`,
     );
   } finally {
     await pool.end();
