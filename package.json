@@ -2,7 +2,7 @@
   "name": "knotrack",
   "version": "0.1.0",
   "private": true,
-  "description": "KnoTrack — a self-hosted MCP server for durable, cross-session project tracking (not an orchestrator).",
+  "description": "KnoTrack \u2014 a self-hosted MCP server for durable, cross-session project tracking (not an orchestrator).",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -16,6 +16,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "generate-token": "tsx scripts/generate-token.ts",
     "rotate-encryption-key": "tsx scripts/rotate-encryption-key.ts",
+    "revoke-credential": "tsx scripts/revoke-credential.ts",
     "get-project-status": "tsx scripts/get-project-status-cli.ts",
     "seed-self": "tsx scripts/seed-self.ts",
     "check-roadmap-drift": "tsx scripts/check-roadmap-drift.ts",
