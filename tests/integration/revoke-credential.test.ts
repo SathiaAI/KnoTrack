@@ -47,8 +47,8 @@ describe('T5.4 — credential revocation', () => {
   it('revoking the github credential makes kt_sync_to_github fail with a clean CONFLICT', async () => {
     const { project_id, track_id } = await makeProjectWithBothAdapters();
 
-    const revoked = await deleteAdapterForProject(pool, project_id, 'github');
-    expect(revoked).toBe(true);
+    const deletedId = await deleteAdapterForProject(pool, project_id, 'github');
+    expect(deletedId).not.toBeNull();
     // The row (and its secret) is gone — nothing stale remains.
     expect(await getAdapterForProject(pool, project_id, 'github')).toBeUndefined();
     expect(await adapterConfigured(pool, project_id, 'github')).toBe(false);
@@ -63,8 +63,8 @@ describe('T5.4 — credential revocation', () => {
   it('revoking the linear credential makes kt_sync_to_linear fail with a clean CONFLICT', async () => {
     const { project_id, track_id } = await makeProjectWithBothAdapters();
 
-    const revoked = await deleteAdapterForProject(pool, project_id, 'linear');
-    expect(revoked).toBe(true);
+    const deletedId = await deleteAdapterForProject(pool, project_id, 'linear');
+    expect(deletedId).not.toBeNull();
     expect(await getAdapterForProject(pool, project_id, 'linear')).toBeUndefined();
     expect(await adapterConfigured(pool, project_id, 'github')).toBe(true);
 
@@ -75,8 +75,19 @@ describe('T5.4 — credential revocation', () => {
 
   it('is idempotent: revoking again returns false (nothing to revoke)', async () => {
     const { project_id } = await makeProjectWithBothAdapters();
-    expect(await deleteAdapterForProject(pool, project_id, 'github')).toBe(true);
-    expect(await deleteAdapterForProject(pool, project_id, 'github')).toBe(false);
+    expect(await deleteAdapterForProject(pool, project_id, 'github')).not.toBeNull();
+    expect(await deleteAdapterForProject(pool, project_id, 'github')).toBeNull();
+  });
+
+  it('revoking one project does NOT touch a different project', async () => {
+    const a = await makeProjectWithBothAdapters();
+    const b = await makeProjectWithBothAdapters();
+    expect(await deleteAdapterForProject(pool, a.project_id, 'github')).not.toBeNull();
+    // B is entirely untouched.
+    expect(await adapterConfigured(pool, b.project_id, 'github')).toBe(true);
+    expect(await adapterConfigured(pool, b.project_id, 'linear')).toBe(true);
+    // A's linear also untouched.
+    expect(await adapterConfigured(pool, a.project_id, 'linear')).toBe(true);
   });
 
   it('does not use a stale token: re-registering after revoke stores the NEW credential', async () => {

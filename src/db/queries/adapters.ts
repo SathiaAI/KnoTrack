@@ -123,12 +123,15 @@ export async function deleteAdapterForProject(
   db: Queryable,
   projectId: string,
   type: 'github' | 'linear',
-): Promise<boolean> {
-  const result = await db.query(`DELETE FROM adapters WHERE project_id = $1 AND type = $2`, [
-    projectId,
-    type,
-  ]);
-  return (result.rowCount ?? 0) > 0;
+): Promise<string | null> {
+  // RETURNING the deleted row's id lets the operator script log exactly which
+  // adapter was revoked (never any secret/ciphertext), and distinguishes a real
+  // deletion from a no-op. Returns null when there was nothing to revoke.
+  const result = await db.query<{ id: string }>(
+    `DELETE FROM adapters WHERE project_id = $1 AND type = $2 RETURNING id`,
+    [projectId, type],
+  );
+  return result.rows[0]?.id ?? null;
 }
 
 export async function adapterConfigured(

@@ -46,6 +46,9 @@ export function parseArgs(args: string[]): RevokeArgs {
   if (!projectId || (type !== 'github' && type !== 'linear')) {
     throw new Error('usage: revoke-credential <project_id> <github|linear> [--yes]');
   }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId)) {
+    throw new Error(`invalid project_id (expected a UUID): ${projectId}`);
+  }
   return { projectId, type, confirmed };
 }
 
@@ -75,15 +78,21 @@ async function main(): Promise<void> {
       return;
     }
 
-    const revoked = await deleteAdapterForProject(pool, projectId, type);
+    console.log(
+      `Revoking the ${type} credential for project ${projectId} ` +
+        `(currently ${exists ? 'CONFIGURED' : 'not configured'})...`,
+    );
+    const deletedId = await deleteAdapterForProject(pool, projectId, type);
     const operator = process.env.SUDO_USER ?? process.env.USER ?? 'unknown';
     const audit =
       `[${new Date().toISOString()}] revoke-credential operator=${operator} ` +
-      `project=${projectId} type=${type} rows_deleted=${revoked ? 1 : 0}`;
+      `project=${projectId} type=${type} adapter_id=${deletedId ?? '-'} ` +
+      `rows_deleted=${deletedId ? 1 : 0}`;
     console.log(
-      revoked
-        ? `${audit}\nRevoked. The next kt_sync_to_${type} for this project fails with ` +
-            `"adapter not configured" until it is re-registered via kt_register_project. ` +
+      deletedId
+        ? `${audit}\nRevoked. Any sync that STARTS after this fails with ` +
+            `"adapter not configured" until re-registered via kt_register_project (a sync ` +
+            `already in flight may finish with the old token — it took its copy before the delete). ` +
             `Remember to also revoke the token at ${providerName(type)}.`
         : `${audit}\nNo ${type} adapter was configured for project ${projectId}; nothing to revoke.`,
     );
