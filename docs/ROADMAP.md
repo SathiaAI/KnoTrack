@@ -1028,7 +1028,8 @@ corrected track-status model, not the currently-broken one).
    target in v1) and records the issue URL on the track (surfaced on
    `kt_get_track`'s `track.linear_issue_url`), verified against one real
    test Linear workspace. depends_on: `T2.13`, `T5.1`.
-   **Status (2026-09-19): implemented + offline-verified.** Mirrors the
+   **Status (2026-09-21): implemented + dogfooded in a real Linear
+   workspace (PRs #25/#26).** Mirrors the
    T5.2 GitHub design — persisted `track_external_links` link as the
    authoritative idempotency key, durable `pending` creation-intent before
    the outbound GraphQL mutation, hidden-marker crash recovery that adopts
@@ -1047,10 +1048,10 @@ corrected track-status model, not the currently-broken one).
    lock; no auto-recreate on a stale link). Covered by offline unit +
    integration tests (`tests/unit/linear-payload.test.ts`,
    `tests/unit/linear-client.test.ts`,
-   `tests/integration/sync-to-linear.test.ts`). The one remaining
-   acceptance gate is the real-workspace dogfood.
-4. **T5.4 — Credential revocation path implemented + unit-tested. ✅ Done
-   2026-09-21.** Acceptance: deleting a stored GitHub/Linear credential causes
+   `tests/integration/sync-to-linear.test.ts`). The real-workspace
+   dogfood acceptance gate is now cleared (PRs #25/#26, 2026-09-21).
+4. **T5.4 — Credential revocation path implemented + unit- and
+   integration-tested. ✅ Done 2026-09-21.** Acceptance: deleting a stored GitHub/Linear credential causes
    the next sync call to fail with a clear "adapter not configured" CONFLICT
    rather than crashing or using a stale token. Shipped: a
    `deleteAdapterForProject` query + the operator-run
